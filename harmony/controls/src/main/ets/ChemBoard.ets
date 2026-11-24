@@ -1,6 +1,6 @@
-// 新增（鸿蒙端增强）— 分子结构绘制面板（ChemDraw 基本功能子集）
-// 支持：单键 / 双键 / 三键拖拽成键、苯环与环己烷一键放置、元素切换、擦除、撤销、清空。
-// 结构与墨迹完全独立：只在本面板的 Canvas 上绘制，关闭即还原，不改动白板文档。
+// 分子结构绘制层（对齐 ChemDraw 核心交互）
+// 不单独开窗口：直接覆盖在白板画布上，工具条悬浮在顶部，结构以浮层形式独立于墨迹文档。
+// 渲染采用声明式 Path（数据驱动），避免 Canvas 手动重绘与组件重建的时序问题。
 import { ThemeTokens, themeTokens } from './ThemeTokens';
 
 export interface ChemAtom {
@@ -15,6 +15,7 @@ export interface ChemBond {
   A: number;
   B: number;
   Order: number;
+  Wedge: boolean;
 }
 
 interface ChemTool {
@@ -22,43 +23,66 @@ interface ChemTool {
   Label: string;
 }
 
-const ELEMENT_CYCLE: string[] = ['C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'H'];
+interface ChemRing {
+  Id: string;
+  Label: string;
+  Sides: number;
+  Aromatic: boolean;
+}
+
+const BOND_LENGTH: number = 42;
+const ANGLE_STEP: number = Math.PI / 12;
+const HIT_ATOM: number = 16;
+const HIT_BOND: number = 9;
+const SNAP: number = 15;
+
+const ELEMENTS: string[] = ['C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'H', 'Na', 'K'];
 
 const CHEM_TOOLS: ChemTool[] = [
+  { Id: 'select', Label: '选择' },
   { Id: 'bond1', Label: '单键' },
   { Id: 'bond2', Label: '双键' },
   { Id: 'bond3', Label: '三键' },
-  { Id: 'benzene', Label: '苯环' },
-  { Id: 'cyclohex', Label: '环己烷' },
+  { Id: 'wedge', Label: '楔形' },
+  { Id: 'erase', Label: '橡皮' },
+  { Id: 'rings', Label: '环' },
   { Id: 'element', Label: '元素' },
-  { Id: 'erase', Label: '擦除' }
+  { Id: 'clean', Label: '清理' }
+];
+
+const CHEM_RINGS: ChemRing[] = [
+  { Id: 'ring3', Label: '环丙烷', Sides: 3, Aromatic: false },
+  { Id: 'ring4', Label: '环丁烷', Sides: 4, Aromatic: false },
+  { Id: 'ring5', Label: '环戊烷', Sides: 5, Aromatic: false },
+  { Id: 'ring6', Label: '环己烷', Sides: 6, Aromatic: false },
+  { Id: 'ring8', Label: '环辛烷', Sides: 8, Aromatic: false },
+  { Id: 'benzene', Label: '苯环', Sides: 6, Aromatic: true }
 ];
 
 @Component
 export struct ChemBoard {
   @Prop dark: boolean = false;
-  onClose: () => void = () => {
+  onExit: () => void = () => {
   };
 
   @State atoms: ChemAtom[] = [];
   @State bonds: ChemBond[] = [];
-  @State tool: string = 'bond1';
-  @State hint: string = '在网格上拖拽即可成键；点「苯环」后单击放置';
-  @State previewing: boolean = false;
-  // 点-点成键的起点（触摸下比拖拽更稳）：第二次点击自动连键，空白处自动补原子。
+  @State tool: string = 'select';
   @State pendingId: number = -1;
-  private canvasW: number = 0;
-  private canvasH: number = 0;
-  private ready: boolean = false;
+  @State selectedId: number = -1;
+  @State ringMenuOpen: boolean = false;
+  @State elementMenuOpen: boolean = false;
+  @State hint: string = '选择工具：按住原子可拖动；单键：单击沿链延伸，或按住拖拽';
+  @State previewing: boolean = false;
+  @State previewX: number = 0;
+  @State previewY: number = 0;
   private nextId: number = 1;
-  private startId: number = -1;
-  private previewX: number = 0;
-  private previewY: number = 0;
   private downX: number = 0;
   private downY: number = 0;
-  private history: string[] = [];
-  private settings: RenderingContextSettings = new RenderingContextSettings(true);
-  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private dragging: boolean = false;
+  private anchorId: number = -1;
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
 
   private tokens(): ThemeTokens {
     return themeTokens(this.dark);
@@ -68,30 +92,60 @@ export struct ChemBoard {
     return this.dark ? '#FFE8ECEF' : '#FF1A1A1E';
   }
 
-  private paperColor(): string {
-    return this.dark ? '#FF14161B' : '#FFFFFFFF';
+  private accent(): string {
+    return '#FF38E1FF';
   }
 
   private snap(value: number): number {
-    return Math.round(value / 30) * 30;
+    return Math.round(value / SNAP) * SNAP;
   }
 
   private snapshot(): void {
-    this.history.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
-    if (this.history.length > 60) {
-      this.history.shift();
+    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    if (this.undoStack.length > 80) {
+      this.undoStack.shift();
     }
+    this.redoStack = [];
+  }
+
+  private restore(json: string): void {
+    const state: ChemHistory = JSON.parse(json) as ChemHistory;
+    this.atoms = state.a;
+    this.bonds = state.b;
+    let maxId = 0;
+    for (let i = 0; i < this.atoms.length; i++) {
+      if (this.atoms[i].Id > maxId) {
+        maxId = this.atoms[i].Id;
+      }
+    }
+    for (let i = 0; i < this.bonds.length; i++) {
+      if (this.bonds[i].Id > maxId) {
+        maxId = this.bonds[i].Id;
+      }
+    }
+    this.nextId = maxId + 1;
   }
 
   private undo(): void {
-    const last = this.history.pop();
+    const last = this.undoStack.pop();
     if (last === undefined) {
       return;
     }
-    const state: ChemHistory = JSON.parse(last) as ChemHistory;
-    this.atoms = state.a;
-    this.bonds = state.b;
-    this.redraw();
+    this.redoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    this.restore(last);
+    this.pendingId = -1;
+    this.selectedId = -1;
+  }
+
+  private redo(): void {
+    const next = this.redoStack.pop();
+    if (next === undefined) {
+      return;
+    }
+    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    this.restore(next);
+    this.pendingId = -1;
+    this.selectedId = -1;
   }
 
   private atomById(id: number): ChemAtom | null {
@@ -104,13 +158,39 @@ export struct ChemBoard {
   }
 
   private atomAt(x: number, y: number): ChemAtom | null {
-    const hit = 22;
     for (let i = this.atoms.length - 1; i >= 0; i--) {
       const a = this.atoms[i];
       const dx = a.X - x;
       const dy = a.Y - y;
-      if (dx * dx + dy * dy <= hit * hit) {
+      if (dx * dx + dy * dy <= HIT_ATOM * HIT_ATOM) {
         return a;
+      }
+    }
+    return null;
+  }
+
+  private bondAt(x: number, y: number): ChemBond | null {
+    for (let i = this.bonds.length - 1; i >= 0; i--) {
+      const bond = this.bonds[i];
+      const a = this.atomById(bond.A);
+      const b = this.atomById(bond.B);
+      if (a === null || b === null) {
+        continue;
+      }
+      const dx = b.X - a.X;
+      const dy = b.Y - a.Y;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1) {
+        continue;
+      }
+      let t = ((x - a.X) * dx + (y - a.Y) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const px = a.X + dx * t;
+      const py = a.Y + dy * t;
+      const ddx = x - px;
+      const ddy = y - py;
+      if (ddx * ddx + ddy * ddy <= HIT_BOND * HIT_BOND) {
+        return bond;
       }
     }
     return null;
@@ -123,7 +203,7 @@ export struct ChemBoard {
     return atom;
   }
 
-  private addBond(a: number, b: number, order: number): void {
+  private addBond(a: number, b: number, order: number, wedge: boolean): void {
     if (a === b) {
       return;
     }
@@ -131,69 +211,17 @@ export struct ChemBoard {
       const e = this.bonds[i];
       if ((e.A === a && e.B === b) || (e.A === b && e.B === a)) {
         e.Order = order;
+        e.Wedge = wedge;
         this.bonds = this.bonds.slice();
         return;
       }
     }
-    const bond: ChemBond = { Id: this.nextId, A: a, B: b, Order: order };
+    const bond: ChemBond = { Id: this.nextId, A: a, B: b, Order: order, Wedge: wedge };
     this.nextId++;
     this.bonds = this.bonds.concat([bond]);
   }
 
-  private placeRing(cx: number, cy: number, aromatic: boolean): void {
-    this.snapshot();
-    const radius = 54;
-    const created: ChemAtom[] = [];
-    for (let i = 0; i < 6; i++) {
-      const angle = -Math.PI / 2 + i * Math.PI / 3;
-      const x = cx + Math.cos(angle) * radius;
-      const y = cy + Math.sin(angle) * radius;
-      created.push(this.addAtom(Math.round(x), Math.round(y), 'C'));
-    }
-    for (let i = 0; i < 6; i++) {
-      const order = aromatic && i % 2 === 0 ? 2 : 1;
-      this.addBond(created[i].Id, created[(i + 1) % 6].Id, order);
-    }
-    this.redraw();
-  }
-
-  private cycleElementAt(x: number, y: number): void {
-    const atom = this.atomAt(x, y);
-    if (atom === null) {
-      return;
-    }
-    this.snapshot();
-    let index = ELEMENT_CYCLE.indexOf(atom.Element);
-    if (index < 0) {
-      index = 0;
-    }
-    atom.Element = ELEMENT_CYCLE[(index + 1) % ELEMENT_CYCLE.length];
-    this.atoms = this.atoms.slice();
-    this.redraw();
-  }
-
-  private eraseAt(x: number, y: number): void {
-    const atom = this.atomAt(x, y);
-    if (atom === null) {
-      return;
-    }
-    this.snapshot();
-    this.atoms = this.atoms.filter((item: ChemAtom) => item.Id !== atom.Id);
-    this.bonds = this.bonds.filter((item: ChemBond) => item.A !== atom.Id && item.B !== atom.Id);
-    this.redraw();
-  }
-
-  private clearAll(): void {
-    if (this.atoms.length === 0 && this.bonds.length === 0) {
-      return;
-    }
-    this.snapshot();
-    this.atoms = [];
-    this.bonds = [];
-    this.redraw();
-  }
-
-  private orderOfTool(): number {
+  private bondOrder(): number {
     if (this.tool === 'bond2') {
       return 2;
     }
@@ -203,6 +231,157 @@ export struct ChemBoard {
     return 1;
   }
 
+  private targetFrom(x: number, y: number, rawAngle: number): number[] {
+    const angle = Math.round(rawAngle / ANGLE_STEP) * ANGLE_STEP;
+    return [
+      Math.round(x + Math.cos(angle) * BOND_LENGTH),
+      Math.round(y + Math.sin(angle) * BOND_LENGTH)
+    ];
+  }
+
+  private commitBond(x: number, y: number): void {
+    this.snapshot();
+    const order = this.bondOrder();
+    const wedge = this.tool === 'wedge';
+    let anchor: ChemAtom | null = null;
+    if (this.anchorId >= 0) {
+      anchor = this.atomById(this.anchorId);
+    }
+    if (anchor === null && this.pendingId >= 0) {
+      anchor = this.atomById(this.pendingId);
+    }
+    const hit = this.atomAt(x, y);
+    if (anchor === null) {
+      const a = this.addAtom(this.snap(x), this.snap(y), 'C');
+      const point = this.targetFrom(a.X, a.Y, -Math.PI / 6);
+      const b = this.addAtom(point[0], point[1], 'C');
+      this.addBond(a.Id, b.Id, order, wedge);
+      this.pendingId = b.Id;
+      return;
+    }
+    if (hit !== null && hit.Id !== anchor.Id) {
+      this.addBond(anchor.Id, hit.Id, order, wedge);
+      this.pendingId = hit.Id;
+      return;
+    }
+    const dx = x - anchor.X;
+    const dy = y - anchor.Y;
+    let angle = Math.atan2(dy, dx);
+    if (dx * dx + dy * dy < 36) {
+      angle = -Math.PI / 6;
+    }
+    const point = this.targetFrom(anchor.X, anchor.Y, angle);
+    const end = this.addAtom(point[0], point[1], 'C');
+    this.addBond(anchor.Id, end.Id, order, wedge);
+    this.pendingId = end.Id;
+  }
+
+  private placeRing(cx: number, cy: number, sides: number, aromatic: boolean): void {
+    this.snapshot();
+    const radius = sides <= 4 ? BOND_LENGTH * 0.72 : BOND_LENGTH / (2 * Math.sin(Math.PI / sides));
+    const created: ChemAtom[] = [];
+    for (let i = 0; i < sides; i++) {
+      const angle = -Math.PI / 2 + i * 2 * Math.PI / sides;
+      created.push(this.addAtom(
+        Math.round(cx + Math.cos(angle) * radius),
+        Math.round(cy + Math.sin(angle) * radius),
+        'C'
+      ));
+    }
+    for (let i = 0; i < sides; i++) {
+      const order = aromatic && i % 2 === 0 ? 2 : 1;
+      this.addBond(created[i].Id, created[(i + 1) % sides].Id, order, false);
+    }
+    this.pendingId = -1;
+    this.selectedId = -1;
+  }
+
+  private eraseAt(x: number, y: number): void {
+    const atom = this.atomAt(x, y);
+    if (atom !== null) {
+      this.snapshot();
+      this.atoms = this.atoms.filter((item: ChemAtom) => item.Id !== atom.Id);
+      this.bonds = this.bonds.filter((item: ChemBond) => item.A !== atom.Id && item.B !== atom.Id);
+      this.pendingId = -1;
+      return;
+    }
+    const bond = this.bondAt(x, y);
+    if (bond !== null) {
+      this.snapshot();
+      this.bonds = this.bonds.filter((item: ChemBond) => item.Id !== bond.Id);
+    }
+  }
+
+  private cleanUp(): void {
+    if (this.atoms.length === 0) {
+      return;
+    }
+    this.snapshot();
+    const mapped: ChemAtom[] = [];
+    const remap: Map<number, number> = new Map();
+    for (let i = 0; i < this.atoms.length; i++) {
+      const atom = this.atoms[i];
+      let targetId = -1;
+      const candidateX = Math.round(atom.X / SNAP) * SNAP;
+      const candidateY = Math.round(atom.Y / SNAP) * SNAP;
+      for (let j = 0; j < mapped.length; j++) {
+        const dx = mapped[j].X - candidateX;
+        const dy = mapped[j].Y - candidateY;
+        if (dx * dx + dy * dy < 64) {
+          targetId = mapped[j].Id;
+          break;
+        }
+      }
+      if (targetId < 0) {
+        const fresh: ChemAtom = { Id: atom.Id, X: candidateX, Y: candidateY, Element: atom.Element };
+        mapped.push(fresh);
+        remap.set(atom.Id, atom.Id);
+      } else {
+        remap.set(atom.Id, targetId);
+      }
+    }
+    const nextBonds: ChemBond[] = [];
+    const seen: string[] = [];
+    for (let i = 0; i < this.bonds.length; i++) {
+      const bond = this.bonds[i];
+      const a = remap.get(bond.A);
+      const b = remap.get(bond.B);
+      if (a === undefined || b === undefined || a === b) {
+        continue;
+      }
+      const key = Math.min(a, b) + '-' + Math.max(a, b);
+      if (seen.indexOf(key) >= 0) {
+        continue;
+      }
+      seen.push(key);
+      nextBonds.push({ Id: bond.Id, A: a, B: b, Order: bond.Order, Wedge: bond.Wedge });
+    }
+    this.atoms = mapped;
+    this.bonds = nextBonds;
+    this.pendingId = -1;
+    this.selectedId = -1;
+  }
+
+  private applyElement(element: string): void {
+    const atom = this.atomById(this.selectedId);
+    if (atom === null) {
+      return;
+    }
+    this.snapshot();
+    atom.Element = element;
+    this.atoms = this.atoms.slice();
+    this.elementMenuOpen = false;
+  }
+
+  private ringById(id: string): ChemRing | null {
+    for (let i = 0; i < CHEM_RINGS.length; i++) {
+      if (CHEM_RINGS[i].Id === id) {
+        return CHEM_RINGS[i];
+      }
+    }
+    return null;
+  }
+
   private onTouchEvent(event: TouchEvent): void {
     if (event.touches.length === 0) {
       return;
@@ -210,12 +389,14 @@ export struct ChemBoard {
     const x = event.touches[0].x;
     const y = event.touches[0].y;
     if (event.type === TouchType.Down) {
-      if (this.tool === 'benzene') {
-        this.placeRing(this.snap(x), this.snap(y), true);
-        return;
-      }
-      if (this.tool === 'cyclohex') {
-        this.placeRing(this.snap(x), this.snap(y), false);
+      this.downX = x;
+      this.downY = y;
+      this.previewX = x;
+      this.previewY = y;
+      if (this.tool === 'select') {
+        const hit = this.atomAt(x, y);
+        this.selectedId = hit === null ? -1 : hit.Id;
+        this.dragging = hit !== null;
         return;
       }
       if (this.tool === 'erase') {
@@ -223,279 +404,431 @@ export struct ChemBoard {
         return;
       }
       if (this.tool === 'element') {
-        this.cycleElementAt(x, y);
-        return;
-      }
-      // 已有起点：第二次点击直接成键（触摸下比拖拽更稳），空白处自动补原子。
-      if (this.pendingId >= 0) {
-        this.snapshot();
-        let target = this.atomAt(x, y);
-        if (target === null) {
-          target = this.addAtom(this.snap(x), this.snap(y), 'C');
+        const hit = this.atomAt(x, y);
+        if (hit !== null) {
+          this.selectedId = hit.Id;
+          this.elementMenuOpen = true;
         }
-        this.addBond(this.pendingId, target.Id, this.orderOfTool());
-        this.pendingId = -1;
-        this.previewing = false;
-        this.redraw();
         return;
       }
-      this.snapshot();
-      let start = this.atomAt(x, y);
-      if (start === null) {
-        start = this.addAtom(this.snap(x), this.snap(y), 'C');
+      if (this.tool.indexOf('ring') === 0 || this.tool === 'benzene') {
+        this.previewing = true;
+        return;
       }
-      this.pendingId = start.Id;
-      this.startId = start.Id;
-      this.downX = x;
-      this.downY = y;
-      this.previewX = x;
-      this.previewY = y;
+      const hit = this.atomAt(x, y);
+      this.anchorId = hit === null ? -1 : hit.Id;
       this.previewing = true;
-      this.redraw();
     } else if (event.type === TouchType.Move) {
+      if (this.tool === 'select' && this.dragging && this.selectedId >= 0) {
+        const atom = this.atomById(this.selectedId);
+        if (atom !== null) {
+          atom.X = this.snap(x);
+          atom.Y = this.snap(y);
+          this.atoms = this.atoms.slice();
+        }
+        return;
+      }
       if (!this.previewing) {
         return;
       }
       this.previewX = x;
       this.previewY = y;
-      this.redraw();
     } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      if (this.tool === 'select' && this.dragging) {
+        this.dragging = false;
+        this.snapshot();
+        return;
+      }
       if (!this.previewing) {
         return;
       }
       this.previewing = false;
       if (event.type === TouchType.Cancel) {
-        this.pendingId = -1;
-        this.redraw();
+        return;
+      }
+      if (this.tool.indexOf('ring') === 0 || this.tool === 'benzene') {
+        const ring = this.ringById(this.tool);
+        if (ring !== null) {
+          this.placeRing(this.snap(this.downX), this.snap(this.downY), ring.Sides, ring.Aromatic);
+        }
         return;
       }
       const dx = x - this.downX;
       const dy = y - this.downY;
-      if (dx * dx + dy * dy < 100) {
-        // 视为「点选起点」：保留 pendingId，等待下一次点击成键。
-        this.redraw();
-        return;
+      const moved = dx * dx + dy * dy > 100;
+      // 拖拽：以按下点为锚；单击：点中原子则以它为锚，点空白则沿用上次链端继续延伸。
+      if (moved || this.anchorId >= 0) {
+        this.pendingId = this.anchorId;
       }
-      let end = this.atomAt(x, y);
-      if (end === null) {
-        end = this.addAtom(this.snap(x), this.snap(y), 'C');
-      }
-      this.addBond(this.startId, end.Id, this.orderOfTool());
-      this.pendingId = -1;
-      this.redraw();
+      this.commitBond(moved ? x : this.downX, moved ? y : this.downY);
+      this.anchorId = -1;
     }
   }
 
-  private drawBond(ctx: CanvasRenderingContext2D, a: ChemAtom, b: ChemAtom, order: number): void {
+  // ---- 声明式渲染 ---------------------------------------------------------
+
+  private bondStart(bond: ChemBond): ChemAtom | null {
+    return this.atomById(bond.A);
+  }
+
+  private seg(bond: ChemBond): number[] {
+    const a = this.atomById(bond.A);
+    const b = this.atomById(bond.B);
+    if (a === null || b === null) {
+      return [0, 0, 0, 0, 0, 0, 0, 0];
+    }
     const dx = b.X - a.X;
     const dy = b.Y - a.Y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 1) {
-      return;
-    }
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / len;
     const uy = dy / len;
     const nx = -uy;
     const ny = ux;
-    const padA = a.Element === 'C' ? 4 : 12;
-    const padB = b.Element === 'C' ? 4 : 12;
-    const x1 = a.X + ux * padA;
-    const y1 = a.Y + uy * padA;
-    const x2 = b.X - ux * padB;
-    const y2 = b.Y - uy * padB;
-    ctx.strokeStyle = this.lineColor();
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    if (order <= 1) {
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-    } else if (order === 2) {
-      ctx.moveTo(x1 + nx * 2.6, y1 + ny * 2.6);
-      ctx.lineTo(x2 + nx * 2.6, y2 + ny * 2.6);
-      ctx.moveTo(x1 - nx * 2.6, y1 - ny * 2.6);
-      ctx.lineTo(x2 - nx * 2.6, y2 - ny * 2.6);
-    } else {
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.moveTo(x1 + nx * 3.4, y1 + ny * 3.4);
-      ctx.lineTo(x2 + nx * 3.4, y2 + ny * 3.4);
-      ctx.moveTo(x1 - nx * 3.4, y1 - ny * 3.4);
-      ctx.lineTo(x2 - nx * 3.4, y2 - ny * 3.4);
-    }
-    ctx.stroke();
+    // 隐式 C 端点不缩进：C–C 键必须连续，否则相邻键之间会出现断裂。
+    const padA = a.Element === 'C' ? 0 : 12;
+    const padB = b.Element === 'C' ? 0 : 12;
+    return [
+      a.X + ux * padA, a.Y + uy * padA,
+      b.X - ux * padB, b.Y - uy * padB,
+      nx, ny, len
+    ];
   }
 
-  private redraw(): void {
-    if (!this.ready) {
-      return;
-    }
-    const ctx = this.ctx;
-    const w = this.canvasW > 0 ? this.canvasW : 600;
-    const h = this.canvasH > 0 ? this.canvasH : 420;
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = this.paperColor();
-    ctx.fillRect(0, 0, w, h);
-    // 网格点：帮助对齐（吸附步长 30vp）
-    ctx.fillStyle = this.dark ? '#26FFFFFF' : '#14000000';
-    for (let gx = 15; gx < w; gx += 30) {
-      for (let gy = 15; gy < h; gy += 30) {
-        ctx.fillRect(gx - 1, gy - 1, 2, 2);
-      }
-    }
+  // Path 的 commands 以 px 解释，而触摸/布局是 vp：这里统一换算，避免图形缩小 1/density。
+  private px(value: number): string {
+    return vp2px(value).toFixed(1);
+  }
+
+  private bondsStrokePath(): string {
+    let d = '';
     for (let i = 0; i < this.bonds.length; i++) {
       const bond = this.bonds[i];
-      const a = this.atomById(bond.A);
-      const b = this.atomById(bond.B);
-      if (a !== null && b !== null) {
-        this.drawBond(ctx, a, b, bond.Order);
-      }
-    }
-    ctx.font = '14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i < this.atoms.length; i++) {
-      const atom = this.atoms[i];
-      if (atom.Element === 'C') {
+      if (bond.Wedge) {
         continue;
       }
-      ctx.fillStyle = this.paperColor();
-      ctx.beginPath();
-      ctx.arc(atom.X, atom.Y, 11, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = this.lineColor();
-      ctx.fillText(atom.Element, atom.X, atom.Y);
-    }
-    if (this.previewing) {
-      const start = this.atomById(this.startId);
-      if (start !== null) {
-        ctx.strokeStyle = this.dark ? '#99A8E6FF' : '#990066BF';
-        ctx.lineWidth = 1.6;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(start.X, start.Y);
-        ctx.lineTo(this.previewX, this.previewY);
-        ctx.stroke();
-        ctx.setLineDash([]);
+      const s = this.seg(bond);
+      const x1 = s[0];
+      const y1 = s[1];
+      const x2 = s[2];
+      const y2 = s[3];
+      const nx = s[4];
+      const ny = s[5];
+      if (bond.Order <= 1) {
+        d += 'M ' + this.px(x1) + ' ' + this.px(y1) + ' L ' + this.px(x2) + ' ' + this.px(y2) + ' ';
+      } else if (bond.Order === 2) {
+        d += 'M ' + this.px(x1 + nx * 2.6) + ' ' + this.px(y1 + ny * 2.6)
+          + ' L ' + this.px(x2 + nx * 2.6) + ' ' + this.px(y2 + ny * 2.6) + ' ';
+        d += 'M ' + this.px(x1 - nx * 2.6) + ' ' + this.px(y1 - ny * 2.6)
+          + ' L ' + this.px(x2 - nx * 2.6) + ' ' + this.px(y2 - ny * 2.6) + ' ';
+      } else {
+        d += 'M ' + this.px(x1) + ' ' + this.px(y1) + ' L ' + this.px(x2) + ' ' + this.px(y2) + ' ';
+        d += 'M ' + this.px(x1 + nx * 3.4) + ' ' + this.px(y1 + ny * 3.4)
+          + ' L ' + this.px(x2 + nx * 3.4) + ' ' + this.px(y2 + ny * 3.4) + ' ';
+        d += 'M ' + this.px(x1 - nx * 3.4) + ' ' + this.px(y1 - ny * 3.4)
+          + ' L ' + this.px(x2 - nx * 3.4) + ' ' + this.px(y2 - ny * 3.4) + ' ';
       }
     }
+    return d;
+  }
+
+  private bondsFillPath(): string {
+    let d = '';
+    for (let i = 0; i < this.bonds.length; i++) {
+      const bond = this.bonds[i];
+      if (!bond.Wedge) {
+        continue;
+      }
+      const s = this.seg(bond);
+      const x1 = s[0];
+      const y1 = s[1];
+      const x2 = s[2];
+      const y2 = s[3];
+      const nx = s[4];
+      const ny = s[5];
+      d += 'M ' + this.px(x1) + ' ' + this.px(y1)
+        + ' L ' + this.px(x2 + nx * 5.2) + ' ' + this.px(y2 + ny * 5.2)
+        + ' L ' + this.px(x2 - nx * 5.2) + ' ' + this.px(y2 - ny * 5.2) + ' Z ';
+    }
+    return d;
+  }
+
+  private previewPath(): string {
+    if (!this.previewing || this.tool === 'select' || this.tool === 'erase'
+      || this.tool === 'element' || this.tool.indexOf('ring') === 0 || this.tool === 'benzene') {
+      return '';
+    }
+    let from: ChemAtom | null = null;
+    if (this.anchorId >= 0) {
+      from = this.atomById(this.anchorId);
+    } else if (this.pendingId >= 0) {
+      from = this.atomById(this.pendingId);
+    }
+    if (from === null) {
+      return '';
+    }
+    const point = this.targetFrom(from.X, from.Y, Math.atan2(this.previewY - from.Y, this.previewX - from.X));
+    return 'M ' + this.px(from.X) + ' ' + this.px(from.Y) + ' L ' + this.px(point[0]) + ' ' + this.px(point[1]);
+  }
+
+  private markIds(): number[] {
+    const ids: number[] = [];
     if (this.pendingId >= 0) {
-      const pending = this.atomById(this.pendingId);
-      if (pending !== null) {
-        ctx.strokeStyle = '#FF38E1FF';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(pending.X, pending.Y, 14, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+      ids.push(this.pendingId);
     }
+    if (this.selectedId >= 0 && this.selectedId !== this.pendingId) {
+      ids.push(this.selectedId);
+    }
+    return ids;
+  }
+
+  private ringPath(sides: number, size: number): string {
+    let path = '';
+    const radius = size / 2 - 1.5;
+    for (let i = 0; i < sides; i++) {
+      const angle = -Math.PI / 2 + i * 2 * Math.PI / sides;
+      const x = size / 2 + Math.cos(angle) * radius;
+      const y = size / 2 + Math.sin(angle) * radius;
+      path += (i === 0 ? 'M ' : 'L ') + this.px(x) + ' ' + this.px(y) + ' ';
+    }
+    return path + 'Z';
+  }
+
+  @Builder
+  AtomView(atom: ChemAtom) {
+    if (atom.Element !== 'C') {
+      Text(atom.Element)
+        .fontSize(14)
+        .fontColor(this.lineColor())
+        .textAlign(TextAlign.Center)
+        .width(26)
+        .height(26)
+        .backgroundColor(this.dark ? '#FF14161B' : '#FFFFFFFF')
+        .borderRadius(13)
+        .position({ x: atom.X - 13, y: atom.Y - 13 })
+        .hitTestBehavior(HitTestMode.None)
+    }
+  }
+
+  @Builder
+  MarkView(id: number) {
+    Circle()
+      .width(28)
+      .height(28)
+      .fill(Color.Transparent)
+      .stroke(this.accent())
+      .strokeWidth(2)
+      .position({ x: (this.atomById(id)?.X ?? 0) - 14, y: (this.atomById(id)?.Y ?? 0) - 14 })
+      .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
   ToolButton(item: ChemTool) {
     Text(item.Label)
-      .fontSize(12)
-      .fontColor(this.tool === item.Id ? '#FF05070C' : this.tokens().textPrimary)
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .backgroundColor(this.tool === item.Id ? '#FF38E1FF' : (this.dark ? '#1AFFFFFF' : '#0F000000'))
-      .borderRadius(8)
+      .fontSize(11)
+      .fontColor(this.tool === item.Id ? '#FF05070C' : '#FFE8ECEF')
+      .padding({ left: 9, right: 9, top: 6, bottom: 6 })
+      .backgroundColor(this.tool === item.Id ? this.accent() : '#1AFFFFFF')
+      .borderRadius(7)
       .onClick(() => {
-        this.tool = item.Id;
-        if (item.Id === 'benzene' || item.Id === 'cyclohex') {
-          this.hint = '单击画布放置' + item.Label;
-        } else if (item.Id === 'element') {
-          this.hint = '单击原子循环切换元素（C→N→O→S→P→F→Cl→Br→H）';
-        } else if (item.Id === 'erase') {
-          this.hint = '单击原子删除该原子及其所有键';
-        } else {
-          this.hint = '在网格上拖拽即可成键';
+        if (item.Id === 'clean') {
+          this.cleanUp();
         }
+        this.tool = item.Id;
+        this.ringMenuOpen = item.Id === 'rings';
+        this.elementMenuOpen = false;
+        this.pendingId = -1;
+        this.anchorId = -1;
+        this.previewing = false;
+        this.hint = this.hintFor(item.Id);
+      })
+  }
+
+  private hintFor(id: string): string {
+    if (id === 'select') {
+      return '按住原子拖动可移动；点空白取消选择';
+    }
+    if (id === 'erase') {
+      return '点原子删除原子及其键；点键删除该键';
+    }
+    if (id === 'element') {
+      return '点原子后选择元素符号';
+    }
+    if (id === 'rings') {
+      return '选择环类型后单击画布放置';
+    }
+    if (id === 'clean') {
+      return '已按 15vp 网格对齐并合并重合原子';
+    }
+    if (id === 'wedge') {
+      return '单击或拖拽生成楔形键（朝末端变宽）';
+    }
+    return '单击沿链延伸（等长、15° 吸附）；按住拖拽指定方向';
+  }
+
+  @Builder
+  RingChip(ring: ChemRing) {
+    Row({ space: 4 }) {
+      Path()
+        .width(16)
+        .height(16)
+        .commands(this.ringPath(ring.Sides, 16))
+        .fill(Color.Transparent)
+        .stroke('#FFE8ECEF')
+        .strokeWidth(1.2)
+      Text(ring.Label)
+        .fontSize(10)
+        .fontColor('#FFE8ECEF')
+    }
+    .padding({ left: 7, right: 9, top: 5, bottom: 5 })
+    .backgroundColor(this.tool === ring.Id ? '#FF38E1FF' : '#1AFFFFFF')
+    .borderRadius(7)
+    .onClick(() => {
+      this.tool = ring.Id;
+      this.ringMenuOpen = false;
+      this.pendingId = -1;
+      this.hint = '单击画布放置' + ring.Label;
+    })
+  }
+
+  @Builder
+  ElementChip(element: string) {
+    Text(element)
+      .fontSize(12)
+      .fontColor('#FF05070C')
+      .width(34)
+      .height(30)
+      .textAlign(TextAlign.Center)
+      .backgroundColor('#FFE9EDF2')
+      .borderRadius(6)
+      .onClick(() => {
+        this.applyElement(element);
       })
   }
 
   build() {
-    Column({ space: 8 }) {
-      Row({ space: 10 }) {
-        Text('分子结构')
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.tokens().textPrimary)
-        Text('ChemDraw 基本绘制')
-          .fontSize(10)
-          .fontColor(this.tokens().textSecondary)
-        Blank()
-        Text('撤销')
-          .fontSize(12)
-          .fontColor(this.history.length > 0 ? this.tokens().textPrimary : this.tokens().textSecondary)
-          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-          .backgroundColor(this.dark ? '#1AFFFFFF' : '#0F000000')
-          .borderRadius(7)
-          .onClick(() => {
-            this.undo();
-          })
-        Text('清空')
-          .fontSize(12)
-          .fontColor(this.tokens().textPrimary)
-          .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-          .backgroundColor(this.dark ? '#1AFFFFFF' : '#0F000000')
-          .borderRadius(7)
-          .onClick(() => {
-            this.clearAll();
-          })
-        Text('关闭')
-          .fontSize(12)
-          .fontColor('#FFFFFFFF')
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .backgroundColor('#FF0067C0')
-          .borderRadius(7)
-          .onClick(() => {
-            this.onClose();
-          })
-      }
-      .width('100%')
-
-      Scroll() {
-        Row({ space: 6 }) {
-          ForEach(CHEM_TOOLS, (item: ChemTool) => {
-            this.ToolButton(item)
-          }, (item: ChemTool) => item.Id)
-        }
-      }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .width('100%')
-
-      Text(this.hint)
-        .fontSize(10)
-        .fontColor(this.tokens().textSecondary)
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 触摸层：铺满画布，负责所有输入（结构层不参与命中）
+      Column()
         .width('100%')
-
-      Canvas(this.ctx)
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor(this.paperColor())
-        .onReady(() => {
-          this.ready = true;
-          this.redraw();
-        })
-        .onAreaChange((oldValue: Area, newValue: Area) => {
-          this.canvasW = Number(newValue.width);
-          this.canvasH = Number(newValue.height);
-          this.redraw();
-        })
+        .height('100%')
+        .backgroundColor(Color.Transparent)
         .onTouch((event: TouchEvent) => {
           this.onTouchEvent(event);
         })
-        .clip(true)
+
+      Path()
+        .width('100%')
+        .height('100%')
+        .commands(this.bondsStrokePath())
+        .fill(Color.Transparent)
+        .stroke(this.lineColor())
+        .strokeWidth(1.8)
+        .hitTestBehavior(HitTestMode.None)
+
+      Path()
+        .width('100%')
+        .height('100%')
+        .commands(this.bondsFillPath())
+        .fill(this.lineColor())
+        .stroke(Color.Transparent)
+        .hitTestBehavior(HitTestMode.None)
+
+      ForEach(this.atoms, (atom: ChemAtom) => {
+        this.AtomView(atom)
+      }, (atom: ChemAtom) => 'atom-' + atom.Id + '-' + atom.Element + '-' + atom.X + '-' + atom.Y)
+
+      ForEach(this.markIds(), (id: number) => {
+        this.MarkView(id)
+      }, (id: number) => 'mark-' + id)
+
+      Path()
+        .width('100%')
+        .height('100%')
+        .commands(this.previewPath())
+        .fill(Color.Transparent)
+        .stroke(this.accent())
+        .strokeWidth(1.6)
+        .strokeDashArray([4, 4])
+        .hitTestBehavior(HitTestMode.None)
+
+      Column({ space: 6 }) {
+        Row({ space: 4 }) {
+          ForEach(CHEM_TOOLS, (item: ChemTool) => {
+            this.ToolButton(item)
+          }, (item: ChemTool) => item.Id)
+          Text('撤销')
+            .fontSize(11)
+            .fontColor('#FFE8ECEF')
+            .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+            .backgroundColor('#1AFFFFFF')
+            .borderRadius(7)
+            .onClick(() => {
+              this.undo();
+            })
+          Text('重做')
+            .fontSize(11)
+            .fontColor('#FFE8ECEF')
+            .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+            .backgroundColor('#1AFFFFFF')
+            .borderRadius(7)
+            .onClick(() => {
+              this.redo();
+            })
+          Text('退出')
+            .fontSize(11)
+            .fontColor('#FFFFFFFF')
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .backgroundColor('#FF0067C0')
+            .borderRadius(7)
+            .onClick(() => {
+              this.onExit();
+            })
+        }
+        .padding(6)
+        .linearGradient({
+          angle: 180,
+          colors: [['#3DFFFFFF', 0.0], ['#E614161B', 0.12], ['#E614161B', 1.0]]
+        })
         .borderRadius(12)
-        .border({ width: 1, color: this.dark ? '#26FFFFFF' : '#14000000' })
+        .border({ width: 1, color: '#66FFFFFF' })
+        .backdropBlur(18)
+        .shadow({ radius: 18, color: '#33000000', offsetX: 0, offsetY: 8 })
+
+        if (this.ringMenuOpen) {
+          Row({ space: 4 }) {
+            ForEach(CHEM_RINGS, (ring: ChemRing) => {
+              this.RingChip(ring)
+            }, (ring: ChemRing) => ring.Id)
+          }
+          .padding(6)
+          .backgroundColor('#E614161B')
+          .borderRadius(10)
+          .border({ width: 1, color: '#33FFFFFF' })
+          .backdropBlur(16)
+        }
+
+        if (this.elementMenuOpen) {
+          Row({ space: 4 }) {
+            ForEach(ELEMENTS, (element: string) => {
+              this.ElementChip(element)
+            }, (element: string) => element)
+          }
+          .padding(6)
+          .backgroundColor('#F2FFFFFF')
+          .borderRadius(10)
+          .border({ width: 1, color: '#1A000000' })
+          .shadow({ radius: 14, color: '#33000000', offsetX: 0, offsetY: 6 })
+        }
+
+        Text(this.hint)
+          .fontSize(10)
+          .fontColor(this.dark ? '#B3FFFFFF' : '#B3000000')
+      }
+      .padding({ left: 12, top: 10 })
+      .alignItems(HorizontalAlign.Start)
     }
-    .padding(14)
-    .width('94%')
-    .constraintSize({ maxWidth: 1080, maxHeight: '88%' })
-    .backgroundColor(this.dark ? '#F214161B' : '#FAFFFFFF')
-    .borderRadius(18)
-    .border({ width: 1, color: this.dark ? '#66FFFFFF' : '#1A000000' })
-    .shadow({ radius: 24, color: '#33000000', offsetX: 0, offsetY: 10 })
+    .width('100%')
+    .height('100%')
   }
 }
 

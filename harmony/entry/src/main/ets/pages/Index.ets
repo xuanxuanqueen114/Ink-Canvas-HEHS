@@ -1520,6 +1520,16 @@ struct Index {
         .hitTestBehavior(HitTestMode.Transparent)
       }
 
+      // 化学绘制层内嵌在画布之上、工具栏之下（不单独开窗口）
+      if (this.chemOpen) {
+        ChemBoard({
+          dark: this.dark,
+          onExit: () => {
+            this.chemOpen = false;
+          }
+        })
+      }
+
       if (!this.boardOpen) {
         Stack({ alignContent: Alignment.Bottom }) {
           FloatingBar({
@@ -1703,20 +1713,7 @@ struct Index {
 
       }
 
-      if (this.chemOpen) {
-        Stack({ alignContent: Alignment.Center }) {
-          ChemBoard({
-            dark: this.dark,
-            onClose: () => {
-              this.chemOpen = false;
-            }
-          })
-        }
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#33000000')
       }
-    }
     .id('inkRoot')
     .focusable(true)
     .defaultFocus(true)
