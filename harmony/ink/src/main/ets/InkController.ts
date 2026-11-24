@@ -479,6 +479,8 @@ export class InkController {
   private _eraserMode: InkEraserMode = InkEraserMode.Area;
   PalmErases: boolean = true;
   RecognizeShapes: boolean = true;
+  // 墨迹转形状成功后的 UI 回调（kind：直线/圆/椭圆/三角形/矩形）
+  onShapeRecognized: ((kind: string) => void) | null = null;
   MultiTouchEnabled: boolean = true;
   ViewTransform: Matrix3x2 = identityMatrix();
   ViewCenter: Point2 = new Point2(960, 540);
@@ -1574,8 +1576,8 @@ export class InkController {
     const result = single.kind === RecognizedShape.Line
       ? single
       : recognizeStrokes(this.recognitionGroups(this._recentForRecognition));
-    if (result.kind === RecognizedShape.None || result.kind === RecognizedShape.Triangle) {
-      return; // 三角形被刻意忽略（复刻基线）
+    if (result.kind === RecognizedShape.None) {
+      return;
     }
     // 直线额外门控（C# TryRecognize）：端点按住、单笔、非荧光笔，缺一不认。
     if (result.kind === RecognizedShape.Line && (!lineEndpointHeld || committed.length !== 1
@@ -1606,6 +1608,15 @@ export class InkController {
           ShapeKind.Line, result.corners[0].X, result.corners[0].Y,
           result.corners[1].X, result.corners[1].Y, input
         ));
+      }
+    } else if (result.kind === RecognizedShape.Triangle) {
+      if (result.corners.length >= 3) {
+        const points: Point2[] = [];
+        for (let i = 0; i < result.corners.length; i++) {
+          points.push(new Point2(result.corners[i].X, result.corners[i].Y));
+        }
+        points.push(new Point2(result.corners[0].X, result.corners[0].Y));
+        replacement = [shapeStroke(input, points)];
       }
     } else if (result.kind === RecognizedShape.Rectangle) {
       if (result.corners.length >= 1) {
@@ -1647,6 +1658,15 @@ export class InkController {
       }
     ));
     this._recentForRecognition = [];
+    // 识别成功对外通知（UI 层弹 toast / 记录），让"墨迹转形状"对用户可见。
+    if (this.onShapeRecognized !== null) {
+      const kindName = result.kind === RecognizedShape.Circle ? '圆形'
+        : result.kind === RecognizedShape.Ellipse ? '椭圆'
+          : result.kind === RecognizedShape.Line ? '直线'
+            : result.kind === RecognizedShape.Triangle ? '三角形'
+              : result.kind === RecognizedShape.Rectangle ? '矩形' : '图形';
+      this.onShapeRecognized(kindName);
+    }
   }
 
   // ---- 图形工具 ----------------------------------------------------------

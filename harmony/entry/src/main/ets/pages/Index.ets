@@ -229,6 +229,8 @@ struct Index {
   @State settingsFold: number = 0;
   // 分子结构绘制面板（ChemDraw 基本功能子集，独立于墨迹文档）
   @State chemOpen: boolean = false;
+  // 化学层是否接管触摸：点墨迹工具时让开，点化学工具时接管，实现批注与分子绘制共存
+  @State chemInputActive: boolean = true;
   @State boardOpen: boolean = false;
   @State boardIndex: number = 0;
   @State boardPageCount: number = 1;
@@ -629,6 +631,10 @@ struct Index {
     // 画布/识别/日志/抽奖接线（C# AppServices.ApplySettings 对应项）。
     this.controller.EraserRadius = this.eraserRadiusForSize(this.settings.canvas.eraserSize);
     this.controller.RecognizeShapes = this.settings.inkToShape.isInkToShapeEnabled;
+    // 图形识别成功后给出可见反馈（否则用户无感知）
+    this.controller.onShapeRecognized = (kind: string): void => {
+      promptAction.showToast({ message: '已识别为' + kind + '并规整', duration: 1500 });
+    };
     setLogEnabled(this.settings.advanced.isLogEnabled);
     this.lottery.PeopleCount = this.settings.randSettings.peopleCount;
     this.lotteryNoRepeat = this.settings.randSettings.isNotRepeatName;
@@ -1524,6 +1530,10 @@ struct Index {
       if (this.chemOpen) {
         ChemBoard({
           dark: this.dark,
+          active: this.chemInputActive,
+          onActivate: () => {
+            this.chemInputActive = true;
+          },
           onExit: () => {
             this.chemOpen = false;
           }
@@ -3480,8 +3490,7 @@ struct Index {
       || this.aiResultOpen
       || this.aiNotesGenerating
       || this.aiNotesOpen
-      || this.aiSnapOpen
-      || this.chemOpen;
+      || this.aiSnapOpen;
   }
 
   private inFloatingBar(x: number, y: number): boolean {
@@ -4240,6 +4249,11 @@ struct Index {
   }
 
   private handleAction(id: string): void {
+    // 化学模式与批注共存：切到墨迹类工具时化学层让出触摸，墨迹可正常书写。
+    if (this.chemOpen && (id === 'pen' || id === 'highlighter' || id === 'mouse'
+      || id === 'eraserCircle' || id === 'eraserStroke' || id === 'select' || id === 'shapes')) {
+      this.chemInputActive = false;
+    }
     if (id === 'pen') {
       this.controller.Tool = InkTool.Pen;
       this.controller.CurrentAttributes.IsHighlighter = false;
@@ -4323,6 +4337,7 @@ struct Index {
       this.shapeOpen = false;
       this.selectionToolbarOpen = false;
       this.chemOpen = true;
+      this.chemInputActive = true;
     } else if (id === 'toggleCollapse') {
       animateMotion(this.getUIContext(), this.isMotionReduced(), MOTION_STANDARD, () => {
         this.collapsed = !this.collapsed;
