@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const ts = require('D:/Huawei/DevEcoCLI/command-line-tools/sdk/default/openharmony/ets/build-tools/ets-loader/node_modules/typescript');
 
 const srcPath = 'D:/Ink-Canvas-HEHS/harmony/core/src/main/ets/ai/AiAssistant.ts';
@@ -8,7 +9,7 @@ src = src.replace(/^import .*$/gm, '');
 const js = ts.transpileModule(src, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
 }).outputText;
-const outPath = path.join(__dirname, 'AiAssistant.compiled.js');
+const outPath = path.join(os.tmpdir(), 'AiAssistant.compiled.js');
 fs.writeFileSync(outPath, js);
 const ai = require(outPath);
 
