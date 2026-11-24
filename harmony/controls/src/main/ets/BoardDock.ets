@@ -1,7 +1,9 @@
 // 新增（鸿蒙端增强）— 画板三栏底栏
-// 左栏页面、中栏工具、右栏画面与文件；替代平板/2in1 上原先左上角的三组浮条。
+// 左栏页面、中栏工具、右栏文件与退出；每项为「图标 + 中文标签」的竖向按钮，
+// 对齐桌面端底部工具条视觉（不再用汉字充当图标）。
 // 触控热区最小 44vp；与悬浮栏共用磨砂玻璃参数，保持质感一致。
 import { ThemeTokens, themeTokens } from './ThemeTokens';
+import { IconGlyph } from './IconGlyph';
 
 @Component
 export struct BoardDock {
@@ -28,11 +30,10 @@ export struct BoardDock {
   }
 
   private dockTint(): string {
+    // 与主浮动工具栏一致：始终深色玻璃胶囊（浅色主题下也是深色），图标/标签用浅色。
     const intensity = Math.min(100, Math.max(0, this.glassIntensity));
     const alpha = 0.9 - intensity * 0.005;
-    return this.dark
-      ? ('#' + this.alphaHex(alpha * 255) + '14161C')
-      : ('#' + this.alphaHex(alpha * 255) + 'FFFFFF');
+    return '#' + this.alphaHex(alpha * 255) + '1A1A1E';
   }
 
   private glassRadius(): number {
@@ -56,79 +57,110 @@ export struct BoardDock {
     return Math.max(1, this.uiScale);
   }
 
+  // 单个底栏按钮：上图标、下中文标签；选中态用强调色填充整块。
   @Builder
-  DockButton(id: string, label: string, active: boolean) {
-    Column() {
+  DockButton(id: string, label: string, symbol: string, active: boolean) {
+    Column({ space: 2 * this.scaleFactor() }) {
+      IconGlyph({
+        symbol: symbol,
+        fallback: '',
+        size: 20 * this.scaleFactor(),
+        color: active ? '#FF05070C' : '#F2FFFFFF',
+        enabled: true,
+        useIconFont: false
+      })
       Text(label)
-        .fontSize(12 * this.scaleFactor())
-        .fontColor(active ? '#FF05070C' : this.tokens().textPrimary)
+        .fontSize(9.5 * this.scaleFactor())
+        .fontColor(active ? '#FF05070C' : '#B3FFFFFF')
         .maxLines(1)
     }
+    .width(46 * this.scaleFactor())
+    .height(50 * this.scaleFactor())
     .constraintSize({ minWidth: 44, minHeight: 44 })
-    .padding({ left: 8 * this.scaleFactor(), right: 8 * this.scaleFactor() })
     .justifyContent(FlexAlign.Center)
-    .backgroundColor(active ? '#FF38E1FF' : (this.dark ? '#14FFFFFF' : '#0F000000'))
+    .backgroundColor(active ? '#FF38E1FF' : Color.Transparent)
     .borderRadius(this.tokens().buttonRadius)
     .onClick(() => {
       this.onCommand(id);
     })
   }
 
+  @Builder
+  PageLabel() {
+    Column({ space: 1 * this.scaleFactor() }) {
+      Text((this.pageIndex + 1) + '/' + this.pageCount)
+        .fontSize(12 * this.scaleFactor())
+        .fontColor('#F2FFFFFF')
+        .maxLines(1)
+      Text('页码')
+        .fontSize(9 * this.scaleFactor())
+        .fontColor('#B3FFFFFF')
+    }
+    .width(46 * this.scaleFactor())
+    .height(50 * this.scaleFactor())
+    .constraintSize({ minWidth: 44, minHeight: 44 })
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  DockGroup() {
+    Row({ space: 2 * this.scaleFactor() })
+      .padding(4 * this.scaleFactor())
+      .backgroundColor(this.dockTint())
+      .borderRadius(this.tokens().barCorner)
+      .border({ width: 1, color: '#33FFFFFF' })
+      .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
+  }
 
   build() {
-    Row({ space: 10 * this.scaleFactor() }) {
-      // 左栏：页面导航
-      Row({ space: 3 * this.scaleFactor() }) {
-        this.DockButton('pagePrev', '‹', false)
-        Column() {
-          Text((this.pageIndex + 1) + '/' + this.pageCount)
-            .fontSize(12 * this.scaleFactor())
-            .fontColor(this.tokens().textPrimary)
-            .maxLines(1)
-        }
-        .height(44)
-        .constraintSize({ minWidth: 44 })
-        .justifyContent(FlexAlign.Center)
-        this.DockButton('pageNext', '›', false)
-        this.DockButton('pageAdd', '＋', false)
-        this.DockButton('pageRemove', '删', false)
+    Row({ space: 8 * this.scaleFactor() }) {
+      // 左栏：翻页
+      Row({ space: 2 * this.scaleFactor() }) {
+        this.DockButton('pagePrev', '上一页', 'chevron_left', false)
+        this.PageLabel()
+        this.DockButton('pageNext', '下一页', 'chevron_right', false)
+        this.DockButton('pageAdd', '加页', 'plus', false)
       }
-      .padding(6 * this.scaleFactor())
+      .padding(4 * this.scaleFactor())
       .backgroundColor(this.dockTint())
       .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: this.tokens().floatBarBorder })
+      .border({ width: 1, color: '#33FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
 
-      // 中栏：黑板工具
-      Row({ space: 3 * this.scaleFactor() }) {
-        this.DockButton('pen', '笔', this.selectedId === 'pen')
-        this.DockButton('eraserCircle', '橡', this.selectedId === 'eraserCircle' || this.selectedId === 'eraserStroke')
-        this.DockButton('undo', '↶', false)
-        this.DockButton('redo', '↷', false)
-        this.DockButton('clearPage', '清页', false)
-        this.DockButton('bgCycle', this.backgroundLabel(), false)
+      // 中栏：工具
+      Row({ space: 2 * this.scaleFactor() }) {
+        this.DockButton('gesture', '手势', 'hand_tap', this.selectedId === 'gesture')
+        this.DockButton('bgCycle', '画布', 'rectangle_stack', false)
+        this.DockButton('select', '选择', 'mouse', this.selectedId === 'select')
+        this.DockButton('pen', '墨迹', 'pencil_tip', this.selectedId === 'pen')
+        this.DockButton('eraserCircle', '橡皮', 'eraser_line_fill',
+          this.selectedId === 'eraserCircle' || this.selectedId === 'eraserStroke')
+        this.DockButton('shapes', '图形', 'square_dashed', this.selectedId === 'shapes')
+        this.DockButton('insertImage', '插入图片', 'picture', false)
+        this.DockButton('undo', '撤销', 'undo', false)
+        this.DockButton('redo', '重做', 'redo', false)
+        this.DockButton('tools', '更多', 'wrench_and_screwdriver', this.selectedId === 'tools')
       }
-      .padding(6 * this.scaleFactor())
+      .padding(4 * this.scaleFactor())
       .backgroundColor(this.dockTint())
       .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: this.tokens().floatBarBorder })
+      .border({ width: 1, color: '#33FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
 
       // 右栏：文件与退出
-      Row({ space: 3 * this.scaleFactor() }) {
-        this.DockButton('insertImage', '图', false)
-        this.DockButton('insertVideo', '视', false)
-        this.DockButton('save', '保存', false)
-        this.DockButton('open', '打开', false)
-        this.DockButton('exit', '退出画板', false)
+      Row({ space: 2 * this.scaleFactor() }) {
+        this.DockButton('save', '保存', 'save', false)
+        this.DockButton('open', '打开', 'folder', false)
+        this.DockButton('clearPage', '清页', 'trash', false)
+        this.DockButton('exit', '退出', 'arrow_right_to_line', false)
       }
-      .padding(6 * this.scaleFactor())
+      .padding(4 * this.scaleFactor())
       .backgroundColor(this.dockTint())
       .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: this.tokens().floatBarBorder })
+      .border({ width: 1, color: '#33FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
     }
     .padding(4 * this.scaleFactor())
-    .constraintSize({ maxWidth: '96%' })
+    .constraintSize({ maxWidth: '98%' })
   }
 }

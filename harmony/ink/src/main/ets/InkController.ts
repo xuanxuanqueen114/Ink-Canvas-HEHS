@@ -1136,20 +1136,29 @@ export class InkController {
 
     const stroke = this._live.get(p.Id);
     if (stroke !== undefined) {
-      // 端点 = 指针最后一次"在移动"的位置及其时刻（3px 内的静止抖动不刷新）。
-      const endpoint = this._lineEndpoints.get(p.Id);
-      if (endpoint === undefined
-        || (p.X - endpoint.X) * (p.X - endpoint.X) + (p.Y - endpoint.Y) * (p.Y - endpoint.Y)
-          > LINE_HOLD_RADIUS * LINE_HOLD_RADIUS) {
-        this._lineEndpoints.set(p.Id, { X: p.X, Y: p.Y, Since: p.TimeMs });
-      }
-      // 宽度在点到达时结算，绝不在抬笔后重算；模拟压感笔锋用相对时间。
-      const startTime = this._strokeStartTimes.get(p.Id);
-      const time = startTime !== undefined ? p.TimeMs - startTime : this.pointerTime(p);
-      stroke.addPoint(world.X, world.Y, p.Pressure, time, p.TiltX, p.TiltY, p.HasPressure);
-      this.markGeometry(stroke);
+      this.appendLivePoint(p);
       this.invalidate();
     }
+  }
+
+  /** L2 批量细分加点：仅书写路径追加活体点（端点/宽度结算与 onPointerMove 逐位一致），不触发出帧；
+   *  宿主对 Catmull-Rom 中间点调用本方法、对终点调用 onPointerMove 统一出帧一次，控单帧耗时。 */
+  appendLivePoint(p: PointerSample): void {
+    const stroke = this._live.get(p.Id);
+    if (stroke === undefined) {
+      return;
+    }
+    const world = this.toWorld(p.X, p.Y);
+    const endpoint = this._lineEndpoints.get(p.Id);
+    if (endpoint === undefined
+      || (p.X - endpoint.X) * (p.X - endpoint.X) + (p.Y - endpoint.Y) * (p.Y - endpoint.Y)
+        > LINE_HOLD_RADIUS * LINE_HOLD_RADIUS) {
+      this._lineEndpoints.set(p.Id, { X: p.X, Y: p.Y, Since: p.TimeMs });
+    }
+    const startTime = this._strokeStartTimes.get(p.Id);
+    const time = startTime !== undefined ? p.TimeMs - startTime : this.pointerTime(p);
+    stroke.addPoint(world.X, world.Y, p.Pressure, time, p.TiltX, p.TiltY, p.HasPressure);
+    this.markGeometry(stroke);
   }
 
   /** 抬笔；canceled=true 时输入被取消（不做落点收拢，但已写墨迹仍提交，与 C# 一致）。 */

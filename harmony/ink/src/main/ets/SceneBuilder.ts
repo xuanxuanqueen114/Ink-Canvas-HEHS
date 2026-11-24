@@ -71,6 +71,25 @@ function commandFor(stroke: InkStroke): DrawCommand {
   };
 }
 
+// L1 延迟优化：按 SceneStrokeInput 引用 memo 渲染命令。宿主在书写帧复用同一输入对象
+// （见 Index.toSceneStroke 的几何版本+属性 memo），此处命中即跳过 buildStroke+轮廓重建，
+// 把每 move 的 O(已提交总点数) 降为 O(变化笔画点数)。输出与逐帧重建逐位一致。
+const commandCache: Map<SceneStrokeInput, DrawCommand> = new Map();
+const COMMAND_CACHE_CAP = 2048;
+
+function commandForInput(input: SceneStrokeInput): DrawCommand {
+  const hit = commandCache.get(input);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const command = commandFor(buildStroke(input));
+  if (commandCache.size >= COMMAND_CACHE_CAP) {
+    commandCache.clear();
+  }
+  commandCache.set(input, command);
+  return command;
+}
+
 export function buildScene(
   committed: SceneStrokeInput[],
   active: SceneStrokeInput | null,
@@ -84,7 +103,7 @@ export function buildScene(
     scene.View = view;
   }
   for (let i = 0; i < committed.length; i++) {
-    scene.Committed.push(commandFor(buildStroke(committed[i])));
+    scene.Committed.push(commandForInput(committed[i]));
   }
   if (active !== null) {
     scene.Active = commandFor(buildStroke(active));

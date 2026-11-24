@@ -80,6 +80,12 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 
+// L1：已提交笔画场景输入 memo 条目（key=几何版本+属性+预览矩阵）。
+interface SceneInputCacheEntry {
+  key: string;
+  input: SceneStrokeInput;
+}
+
 // 应用内 UI 偏好（减少动效开关）。独立于 Settings.json，避免分叉跨端设置格式。
 interface UiPrefs {
   reduceMotion: boolean;
@@ -91,6 +97,9 @@ interface UiPrefs {
   inkCastPort: number;
   // 透明批注模式：窗口与画布透明，配合系统悬浮窗覆盖教材批注
   transparentAnnotate: boolean;
+  // L3 笔尖落点补偿（vp，仅手写笔通道）：抵消设备视差/报告点与笔尖的系统偏差，默认 0 不改变路径
+  penOffsetX: number;
+  penOffsetY: number;
 }
 
 // 端侧 OCR 结果：Text 为空时仍需区分“设备没有 OCR”与“没识别到文字”。
@@ -468,6 +477,10 @@ struct Index {
       const castPort = prefs.inkCastPort;
       this.inkCastPort = (typeof castPort === 'number' && castPort > 0 && castPort < 65536) ? castPort : 9091;
       this.transparentAnnotate = prefs.transparentAnnotate === true;
+      const offX = prefs.penOffsetX;
+      this.penOffsetX = (typeof offX === 'number' && offX >= -50 && offX <= 50) ? offX : 0;
+      const offY = prefs.penOffsetY;
+      this.penOffsetY = (typeof offY === 'number' && offY >= -50 && offY <= 50) ? offY : 0;
     } catch (e) {
       void e;
     }
@@ -484,7 +497,9 @@ struct Index {
       inkCastEnabled: this.inkCastEnabled,
       inkCastHost: this.inkCastHost,
       inkCastPort: this.inkCastPort,
-      transparentAnnotate: this.transparentAnnotate
+      transparentAnnotate: this.transparentAnnotate,
+      penOffsetX: this.penOffsetX,
+      penOffsetY: this.penOffsetY
     };
     this.storage.writeTextAtomic('UiPrefs.json', JSON.stringify(prefs));
   }
@@ -832,6 +847,19 @@ struct Index {
                 }
               })
             Text('已采集 ' + this.calibrationSamples.length + ' 次').fontSize(13).fontColor(this.dark ? Color.White : Color.Black)
+            Row({ space: 8 }) {
+              Text('笔尖偏移').fontSize(13).fontColor(this.dark ? Color.White : Color.Black)
+              Text('X-').fontSize(13).fontColor(Color.White).padding(6).backgroundColor('#FF0067C0').borderRadius(6)
+                .onClick(() => { this.penOffsetX = Math.max(-50, this.penOffsetX - 0.5); this.persistUiPrefs(); })
+              Text('X+').fontSize(13).fontColor(Color.White).padding(6).backgroundColor('#FF0067C0').borderRadius(6)
+                .onClick(() => { this.penOffsetX = Math.min(50, this.penOffsetX + 0.5); this.persistUiPrefs(); })
+              Text('Y-').fontSize(13).fontColor(Color.White).padding(6).backgroundColor('#FF0067C0').borderRadius(6)
+                .onClick(() => { this.penOffsetY = Math.max(-50, this.penOffsetY - 0.5); this.persistUiPrefs(); })
+              Text('Y+').fontSize(13).fontColor(Color.White).padding(6).backgroundColor('#FF0067C0').borderRadius(6)
+                .onClick(() => { this.penOffsetY = Math.min(50, this.penOffsetY + 0.5); this.persistUiPrefs(); })
+              Text(this.penOffsetX.toFixed(1) + ',' + this.penOffsetY.toFixed(1))
+                .fontSize(13).fontColor(this.dark ? '#A8FFFFFF' : '#9E000000')
+            }
             Row({ space: 10 }) {
               Text('应用校准').fontSize(14).fontColor(Color.White).padding({ left: 16, right: 16, top: 8, bottom: 8 }).backgroundColor('#FF0067C0').borderRadius(6)
                 .onClick(() => { this.applyCalibration(); })
@@ -1265,8 +1293,8 @@ struct Index {
           .backgroundBlurStyle(panelBlurStyle(this.blurEnabled))
           .borderRadius(14)
           .clip(true)
-          .margin({ bottom: this.settings.appearance.floatingBarBottomMargin + 92 })
-          .offset({ x: this.settingsPanelOffsetX(), y: this.settingsPanelOffsetY() })
+          .margin({ bottom: this.panelBottomGap(12) })
+          .offset({ x: this.settingsPanelOffsetX(), y: 0 })
           // settings 为私有对象（非 @State）：读取版本号建立渲染依赖，
           // touchSettings() 递增后整面板以最新设置值重渲染。
           .opacity(this.settingsVersion >= 0 ? 1 : 0)
@@ -1426,33 +1454,48 @@ struct Index {
       }
 
       if (this.toolsOpen) {
+        // 与设置面板一致：贴工具栏上方、随拖动平移并做边界钳制；长列表走滚动，避免顶出屏幕。
         Stack({ alignContent: Alignment.Bottom }) {
-          Column({ space: 6 }) {
-            this.ToolEntry('课件（PDF）', 'courseware')
-            this.ToolEntry('PPT（WPS）', 'pptWps')
-this.ToolEntry('AI 圈选识题', 'aiCapture')
-            this.ToolEntry('AI 圈选识别公式', 'aiCaptureFormula')
-            this.ToolEntry('AI 课堂纪要', 'aiNotes')
-            this.ToolEntry('智能图形规整', 'aiSnap')
-            if (this.mode === 'courseware') {
-              this.ToolEntry('保存批注 PDF', 'saveAnnotatedPdf')
+          Column() {
+            Scroll() {
+              Column({ space: 6 }) {
+                this.ToolEntry('课件（PDF）', 'courseware')
+                this.ToolEntry('PPT（WPS）', 'pptWps')
+                this.ToolEntry('AI 圈选识题', 'aiCapture')
+                this.ToolEntry('AI 圈选识别公式', 'aiCaptureFormula')
+                this.ToolEntry('AI 课堂纪要', 'aiNotes')
+                this.ToolEntry('智能图形规整', 'aiSnap')
+                if (this.mode === 'courseware') {
+                  this.ToolEntry('保存批注 PDF', 'saveAnnotatedPdf')
+                }
+                this.ToolEntry('截图', 'screenshot')
+                this.ToolEntry('Desmos', 'desmos')
+                this.ToolEntry('检查更新', 'update')
+                this.ToolEntry('计时器', 'countdown')
+                this.ToolEntry('抽奖', 'lottery')
+                this.ToolEntry('回放', 'replay')
+                this.ToolEntry('更新日志', 'changelog')
+                this.ToolEntry('设置', 'settings')
+                this.ToolEntry('指南', 'guide')
+                this.ToolEntry('关闭', 'closeTools')
+              }
+              .padding(12)
+              .width('100%')
+              .alignItems(HorizontalAlign.Start)
             }
-            this.ToolEntry('截图', 'screenshot')
-            this.ToolEntry('Desmos', 'desmos')
-            this.ToolEntry('检查更新', 'update')
-            this.ToolEntry('计时器', 'countdown')
-            this.ToolEntry('抽奖', 'lottery')
-            this.ToolEntry('回放', 'replay')
-            this.ToolEntry('更新日志', 'changelog')
-            this.ToolEntry('设置', 'settings')
-            this.ToolEntry('指南', 'guide')
-            this.ToolEntry('关闭', 'closeTools')
+            .width('100%')
+            .layoutWeight(1)
+            .scrollBar(BarState.Auto)
+            .edgeEffect(EdgeEffect.Spring)
           }
-          .padding(12)
+          .width(220)
+          .constraintSize({ maxHeight: '58%' })
           .backgroundColor(panelBackground(this.dark, this.blurEnabled))
           .backgroundBlurStyle(panelBlurStyle(this.blurEnabled))
-          .borderRadius(8)
-          .margin({ bottom: 170 })
+          .borderRadius(10)
+          .clip(true)
+          .margin({ bottom: this.panelBottomGap(10) })
+          .offset({ x: this.toolsPanelOffsetX(), y: 0 })
           .transition(overlayTransition(this.isMotionReduced()))
         }
         .width('100%')
@@ -1750,21 +1793,27 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   // ---- 设置面板：通用行构建器 ------------------------------------------
 
-  // 设置面板跟随工具栏时做边界钳制：面板宽高按当前窗口与 maxWidth/maxHeight 估算，
-  // 避免拖到屏幕边缘时面板顶出可视区、按钮无法点击。
-  private settingsPanelOffsetX(): number {
+  // 面板跟随工具栏的通用钳制：给定面板估算宽度，返回不越出可视区的水平偏移。
+  private panelOffsetX(panelWidth: number): number {
     const w = Math.max(0, this.windowWidth);
-    const panelW = Math.min(w * 0.94, this.fullLayout() ? 460 : 380);
-    const half = (w - panelW) / 2;
+    const half = Math.max(0, (w - panelWidth) / 2);
     return Math.max(-half, Math.min(half, this.barDragX));
   }
 
-  private settingsPanelOffsetY(): number {
-    const h = Math.max(0, this.windowHeight);
-    const panelH = h * 0.62;
-    const bottom = this.settings.appearance.floatingBarBottomMargin + 92;
-    const minY = Math.min(0, -(h - bottom - panelH));
-    return Math.max(minY, this.barDragY);
+  // 面板底距屏幕底：让面板始终贴在「工具栏当前顶边」之上（含工具栏拖动位移），
+  // 避免工具栏上移后面板与其重叠。
+  private panelBottomGap(gap: number): number {
+    const barH = this.barFrameH > 0 ? this.barFrameH : 52;
+    const bm = this.settings.appearance.floatingBarBottomMargin;
+    return Math.max(gap, bm - this.barDragY + barH + gap);
+  }
+
+  private settingsPanelOffsetX(): number {
+    return this.panelOffsetX(Math.min(Math.max(0, this.windowWidth) * 0.94, this.fullLayout() ? 460 : 380));
+  }
+
+  private toolsPanelOffsetX(): number {
+    return this.panelOffsetX(Math.min(Math.max(0, this.windowWidth) * 0.9, this.fullLayout() ? 380 : 320));
   }
 
   @Builder
@@ -3420,6 +3469,43 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
       && y >= top - pad && y <= top + this.barFrameH + pad;
   }
 
+  // L2：返回本 move 应派发的坐标序列（Catmull-Rom 细分中间点 + 原始终点）。
+  // 仅笔/荧光笔且门控开启时细分；曲线穿过原始采样点，不引入滞后；段长 <=1.5vp 不细分控成本。
+  private smoothedMoveCoords(id: number, px: number, py: number): number[][] {
+    const tool = this.controller.Tool;
+    const inkTool = tool === InkTool.Pen || tool === InkTool.Highlighter;
+    if (!this.inkSmoothEnabled || !inkTool) {
+      return [[px, py]];
+    }
+    const out: number[][] = [];
+    const hist = this.smoothHist.get(id);
+    if (hist !== undefined && hist.length >= 4) {
+      const p0x = hist[0];
+      const p0y = hist[1];
+      const p1x = hist[2];
+      const p1y = hist[3];
+      const dx = px - p1x;
+      const dy = py - p1y;
+      if (dx * dx + dy * dy > 2.25) {
+        for (let s = 1; s <= 2; s++) {
+          const t = s / 3;
+          const t2 = t * t;
+          const t3 = t2 * t;
+          const cx = 0.5 * (2 * p1x + (-p0x + px) * t + (2 * p0x - 5 * p1x + 3 * px) * t2 + (-p0x + 3 * p1x - 2 * px) * t3);
+          const cy = 0.5 * (2 * p1y + (-p0y + py) * t + (2 * p0y - 5 * p1y + 3 * py) * t2 + (-p0y + 3 * p1y - 2 * py) * t3);
+          out.push([cx, cy]);
+        }
+      }
+    }
+    out.push([px, py]);
+    if (hist !== undefined && hist.length >= 2) {
+      this.smoothHist.set(id, [hist[hist.length - 2], hist[hist.length - 1], px, py]);
+    } else {
+      this.smoothHist.set(id, [px, py]);
+    }
+    return out;
+  }
+
   private handleTouch(event: TouchEvent): void {
     // 任何模态弹窗/面板打开时，画布一律拒绝书写：这些面板的外层多为 Transparent 命中，
     // 触摸会同时到达画布层，导致在弹窗上点按或拖动时落墨。
@@ -3451,6 +3537,11 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
       const height = touch.height === undefined ? 0 : touch.height;
       let px = touch.x;
       let py = touch.y;
+      // L3：仅手写笔通道叠加笔尖落点补偿（手指/鼠标路径零变化），抵消设备视差系统偏差。
+      if (isStylus) {
+        px += this.penOffsetX;
+        py += this.penOffsetY;
+      }
       // 坐标合法性：鼠标拖出窗口/屏幕边缘时 ArkUI 会回传负坐标或超界坐标，
       // 直接落盘会在笔迹末端拉出“指向画布中心 / 中心对称位置”的假线段。
       const maxX = this.windowWidth > 0 ? this.windowWidth + 1 : 100000;
@@ -3463,6 +3554,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
         }
         this.touchXSeen.set(touch.id, px);
         this.touchYSeen.set(touch.id, py);
+        this.smoothHist.set(touch.id, [px, py]);
       } else {
         const lastX = this.touchXSeen.get(touch.id);
         const lastY = this.touchYSeen.get(touch.id);
@@ -3519,18 +3611,38 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
         }
         this.controller.onPointerDown(sample);
       } else if (event.type === TouchType.Move) {
-        this.controller.onPointerMove(sample);
+        const tMove = Date.now();
+        const coords = this.smoothedMoveCoords(touch.id, px, py);
+        for (let c = 0; c < coords.length; c++) {
+          const ms = new PointerSample(
+            touch.id, coords[c][0], coords[c][1], pressure, width, height,
+            pointerKind(event.source, event.sourceTool), timeMs, false, false, tiltX, tiltY, hasPressure
+          );
+          if (c + 1 < coords.length) {
+            this.controller.appendLivePoint(ms);
+          } else {
+            this.controller.onPointerMove(ms);
+          }
+        }
         this.updateStrokePrediction(event, isStylus);
+        this.moveProbeCount++;
+        if (this.moveProbeCount % 32 === 0) {
+          const dbgHist = this.smoothHist.get(touch.id);
+          console.info('[ink-latency] process_ms=' + (Date.now() - tMove) + ' subdiv=' + coords.length
+            + ' tool=' + this.controller.Tool + ' hist=' + (dbgHist === undefined ? -1 : dbgHist.length));
+        }
       } else if (event.type === TouchType.Up) {
         if (this.renderer !== null) {
           this.renderer.clearPrediction();
         }
+        this.smoothHist.delete(touch.id);
         this.controller.onPointerUp(sample);
         this.castLastStroke();
       } else if (event.type === TouchType.Cancel) {
         if (this.renderer !== null) {
           this.renderer.clearPrediction();
         }
+        this.smoothHist.delete(touch.id);
         this.controller.onPointerCanceled(sample);
       }
     }
@@ -3647,7 +3759,31 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
     this.controller.Redo();
   }
 
+  // L1 延迟优化：已提交笔画的 SceneStrokeInput 按"几何版本+属性+预览矩阵"memo，
+  // 书写帧（文档版本不变）直接复用同一输入对象，避免每 move 全量点拷贝；
+  // 文档结构版本变化（提交/擦除/改色等 touch）时整体失效，保证与逐帧重建逐位一致。
+  private sceneInputCache: Map<InkStroke, SceneInputCacheEntry> = new Map();
+  private sceneInputCacheDocVersion: number = -1;
+  // L1 探针：每 32 个 move 记录一次"事件派发→同步出帧"的处理耗时（ms），用于核对 ≤20ms 目标。
+  private moveProbeCount: number = 0;
+  // L2 顺滑度：平台增强门控（鸿蒙报点率低于 Windows 实时墨迹，稀疏采样直连产生棱角）。
+  // 开启后在输入侧对笔/荧光笔做 Catmull-Rom 细分：曲线穿过原始采样点（无滞后），
+  // 仅增加点密度不改变文档语义；关闭则与 C# 逐点路径逐位一致。黄金向量不经过此输入路径。
+  private readonly inkSmoothEnabled: boolean = true;
+  private smoothHist: Map<number, number[]> = new Map();
+  // L3 笔尖落点补偿（vp，仅手写笔通道），经校准面板调节并持久化 UiPrefs。
+  @State penOffsetX: number = 0;
+  @State penOffsetY: number = 0;
+
   private toSceneStroke(stroke: InkStroke, preview: Matrix3x2 | null = null): SceneStrokeInput {
+    const attr = stroke.Attributes;
+    const key = stroke.GeometryVersion + '|' + attr.BaseWidth + '|' + attr.Color.packedArgb() + '|'
+      + (attr.IsHighlighter ? 1 : 0) + '|' + attr.HighlighterAlpha + '|' + attr.TaperKind + '|'
+      + (preview !== null ? matrixToArray(preview).join(',') : '');
+    const cached = this.sceneInputCache.get(stroke);
+    if (cached !== undefined && cached.key === key) {
+      return cached.input;
+    }
     const points: StrokePointInput[] = [];
     for (let i = 0; i < stroke.Count; i++) {
       const point = stroke.Points[i];
@@ -3658,7 +3794,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
         points.push({ X: point.X, Y: point.Y, Width: point.Width });
       }
     }
-    return {
+    const input: SceneStrokeInput = {
       BaseWidth: stroke.Attributes.BaseWidth,
       ColorPacked: stroke.Attributes.Color.packedArgb(),
       IsHighlighter: stroke.Attributes.IsHighlighter,
@@ -3666,11 +3802,19 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
       TaperKind: stroke.Attributes.TaperKind,
       Points: points
     };
+    this.sceneInputCache.set(stroke, { key: key, input: input });
+    return input;
   }
 
   private refreshScene(): void {
     if (this.renderer === null) {
       return;
+    }
+    // L1：文档结构版本变化时失效输入 memo（提交/擦除/改色/回放切换等），书写帧复用。
+    const docVersion = this.controller.Document.Version;
+    if (docVersion !== this.sceneInputCacheDocVersion) {
+      this.sceneInputCache.clear();
+      this.sceneInputCacheDocVersion = docVersion;
     }
     const committed: SceneStrokeInput[] = [];
     let strokes = this.controller.Document.Strokes;
