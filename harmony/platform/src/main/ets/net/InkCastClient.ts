@@ -14,39 +14,94 @@ export class InkCastClient {
   private host: string = '127.0.0.1';
   private port: number = 9091;
   private pending: string[] = [];
+  // 断线自动重连 + 心跳：服务重启或 Wi-Fi 抖动时保持"走动授课零掉线"。
+  private reconnectTimer: number = -1;
+  private heartbeatTimer: number = -1;
+  private retryDelay: number = 1000;
+  private manualClose: boolean = false;
 
   get Connected(): boolean {
     return this.connected;
   }
 
   connect(host: string, port: number): void {
-    this.close();
+    this.manualClose = false;
     this.host = host;
     this.port = port;
+    this.retryDelay = 1000;
+    this.doConnect();
+  }
+
+  private doConnect(): void {
+    this.closeSocket();
     const tcp = socket.constructTCPSocketInstance();
     this.tcp = tcp;
     tcp.on('connect', () => {
       this.connected = true;
+      this.retryDelay = 1000;
       this.flush();
+      this.startHeartbeat();
     });
     tcp.on('close', () => {
-      this.connected = false;
+      this.handleDisconnect();
     });
     tcp.on('error', (err: BusinessError) => {
       void err;
-      this.connected = false;
+      this.handleDisconnect();
     });
     tcp.on('message', (value: socket.TCPReceiveInfo) => {
       void value;
     });
     tcp.connect({
-      address: { address: host, port: port },
+      address: { address: this.host, port: this.port },
       timeout: 5000
     }, (err: BusinessError) => {
       if (err) {
-        this.connected = false;
+        this.handleDisconnect();
       }
     });
+  }
+
+  private handleDisconnect(): void {
+    this.connected = false;
+    this.stopHeartbeat();
+    if (this.manualClose || this.reconnectTimer >= 0) {
+      return;
+    }
+    const delay = Math.min(15000, this.retryDelay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = -1;
+      this.retryDelay = Math.min(15000, this.retryDelay * 2);
+      this.doConnect();
+    }, delay);
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.connected) {
+        this.send({ t: 'q' });
+      }
+    }, 5000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer >= 0) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = -1;
+    }
+  }
+
+  private closeSocket(): void {
+    if (this.tcp !== null) {
+      try {
+        this.tcp.close();
+      } catch (error) {
+        void error;
+      }
+    }
+    this.tcp = null;
+    this.connected = false;
   }
 
   send(event: Object): void {
@@ -102,15 +157,13 @@ export class InkCastClient {
   }
 
   close(): void {
-    if (this.tcp !== null) {
-      try {
-        this.tcp.close();
-      } catch (error) {
-        void error;
-      }
+    this.manualClose = true;
+    if (this.reconnectTimer >= 0) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = -1;
     }
-    this.tcp = null;
-    this.connected = false;
+    this.stopHeartbeat();
+    this.closeSocket();
     this.pending = [];
   }
 }

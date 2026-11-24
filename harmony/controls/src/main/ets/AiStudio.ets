@@ -427,6 +427,12 @@ export struct AiResultCard {
     Badge: '',
     Question: '',
     Formula: '',
+    FormulaLatex: '',
+    Candidates: [],
+    Givens: [],
+    Goal: '',
+    Pitfalls: [],
+    Warnings: [],
     Steps: [],
     Tags: [],
     Confidence: 0.9,
@@ -502,6 +508,7 @@ export struct AiResultCard {
         })
         .borderRadius({ topLeft: 18, topRight: 18 })
 
+      Scroll() {
       Column({ space: 14 }) {
         Row({ space: 10 }) {
           Stack({ alignContent: Alignment.Center }) {
@@ -561,6 +568,65 @@ export struct AiResultCard {
         .borderRadius(10)
         .border({ width: 1, color: this.dark ? '#1FFFFFFF' : '#0F000000' })
 
+        // 识别质量提示（不阻断展示）
+        if (this.result.Warnings.length > 0) {
+          Column({ space: 3 }) {
+            ForEach(this.result.Warnings, (w: string, index: number) => {
+              Text('⚠ ' + w)
+                .fontSize(10)
+                .fontColor('#FFE0A040')
+                .width('100%')
+            }, (w: string, index: number) => 'warn' + index)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .padding(10)
+          .width('100%')
+          .backgroundColor('#12F59E0B')
+          .borderRadius(8)
+        }
+
+        // 已知 / 所求（搜题增强）
+        if (this.result.Givens.length > 0 || this.result.Goal !== '') {
+          Column({ space: 6 }) {
+            if (this.result.Givens.length > 0) {
+              Row({ space: 8 }) {
+                Text('已知')
+                  .fontSize(9)
+                  .fontColor(this.accent())
+                  .width(26)
+                Text(this.result.Givens.join('；'))
+                  .fontSize(12)
+                  .fontColor(this.tokens().textPrimary)
+                  .lineHeight(17)
+                  .layoutWeight(1)
+              }
+              .alignItems(VerticalAlign.Top)
+              .width('100%')
+            }
+            if (this.result.Goal !== '') {
+              Row({ space: 8 }) {
+                Text('求')
+                  .fontSize(9)
+                  .fontColor(this.accent())
+                  .width(26)
+                Text(this.result.Goal)
+                  .fontSize(12)
+                  .fontColor(this.tokens().textPrimary)
+                  .lineHeight(17)
+                  .layoutWeight(1)
+              }
+              .alignItems(VerticalAlign.Top)
+              .width('100%')
+            }
+          }
+          .alignItems(HorizontalAlign.Start)
+          .padding(12)
+          .width('100%')
+          .backgroundColor(this.dark ? '#14FFFFFF' : '#0A000000')
+          .borderRadius(10)
+          .border({ width: 1, color: this.dark ? '#1FFFFFFF' : '#0F000000' })
+        }
+
         // 公式
         if (this.result.Formula !== '') {
           Column({ space: 4 }) {
@@ -572,6 +638,14 @@ export struct AiResultCard {
               .fontColor(this.dark ? '#FFE6F7FF' : '#FF0B3A66')
               .fontWeight(FontWeight.Medium)
               .letterSpacing(0.4)
+            if (this.result.FormulaLatex !== '') {
+              Text('LaTeX  ' + this.result.FormulaLatex)
+                .fontSize(10)
+                .fontColor(this.tokens().textSecondary)
+                .width('100%')
+                .maxLines(3)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .padding(12)
@@ -579,6 +653,29 @@ export struct AiResultCard {
           .backgroundColor('#1438E1FF')
           .borderRadius(10)
           .border({ width: 1, color: '#3338E1FF' })
+        }
+
+        // 候选公式（同一圈选区域内其它高分行）
+        if (this.result.Candidates.length > 0) {
+          Column({ space: 4 }) {
+            Text('其他候选公式 · 按匹配度排序')
+              .fontSize(9)
+              .fontColor(this.tokens().textSecondary)
+            ForEach(this.result.Candidates, (line: string, index: number) => {
+              Text('· ' + line)
+                .fontSize(11)
+                .fontColor(this.tokens().textSecondary)
+                .lineHeight(16)
+                .width('100%')
+                .maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }, (line: string, index: number) => 'cand' + index)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .padding(10)
+          .width('100%')
+          .backgroundColor(this.dark ? '#0FFFFFFF' : '#08000000')
+          .borderRadius(8)
         }
 
         // 解题步骤（错峰出现）
@@ -612,6 +709,28 @@ export struct AiResultCard {
           }
           .alignItems(HorizontalAlign.Start)
           .width('100%')
+        }
+
+        // 易错提醒（搜题增强）
+        if (this.result.Pitfalls.length > 0) {
+          Column({ space: 6 }) {
+            Text('易错提醒')
+              .fontSize(10)
+              .fontColor('#FFF59E0B')
+            ForEach(this.result.Pitfalls, (item: string, index: number) => {
+              Text('· ' + item)
+                .fontSize(11)
+                .fontColor(this.tokens().textSecondary)
+                .lineHeight(17)
+                .width('100%')
+            }, (item: string, index: number) => 'pit' + index)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .padding(10)
+          .width('100%')
+          .backgroundColor('#14F59E0B')
+          .borderRadius(10)
+          .border({ width: 1, color: '#33F59E0B' })
         }
 
         // 知识点
@@ -687,6 +806,10 @@ export struct AiResultCard {
       }
       .padding({ left: 18, right: 18, top: 16, bottom: 18 })
       .width('100%')
+      }
+      .constraintSize({ maxHeight: '82%' })
+      .scrollBar(BarState.Auto)
+      .edgeEffect(EdgeEffect.Spring)
     }
     .width(500)
     .constraintSize({ maxWidth: '92%' })

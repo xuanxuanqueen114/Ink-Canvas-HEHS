@@ -209,7 +209,7 @@ export struct FloatingBar {
         this.PrimaryCard()
         this.GestureCard()
       } else {
-        this.CollapsedCapsule()
+        this.CompactCard()
       }
       if (this.pptActive) {
         this.PptExitCard()
@@ -275,6 +275,44 @@ export struct FloatingBar {
     .onClick(() => {
       this.onAction('toggleCollapse');
     })
+  }
+
+  // 折叠态白名单（对齐 Windows 端折叠浮条）：只保留最常用的 6 项，仍可直接切换工具，
+  // 不是只显示当前工具的单按钮胶囊；其余功能收进「展开」后按需调用。
+  private compactVisible(id: string): boolean {
+    return id === 'mouse' || id === 'pen' || id === 'highlighter'
+      || id === 'clear' || id === 'board' || id === 'tools';
+  }
+
+  @Builder
+  CompactCard() {
+    Row({ space: 0 }) {
+      ForEach(FLOATING_BAR_BUTTONS, (button: FloatingBarButton) => {
+        if (this.compactVisible(button.Id) && this.buttonVisible(button)) {
+          this.ButtonCell(button)
+        }
+      }, (button: FloatingBarButton) => 'compact-' + button.Id)
+      Column() {
+        Text('⌃')
+          .fontSize(15 * this.uiScale)
+          .fontColor(this.winIcon())
+      }
+      .width(Math.max(44, 40 * this.uiScale))
+      .height(Math.max(44, this.tokens().buttonHeight * this.uiScale))
+      .justifyContent(FlexAlign.Center)
+      .borderRadius(10)
+      .backgroundColor(this.buttonBase())
+      .onClick(() => {
+        // 窗口过窄时会因 availableWidth 自动折叠，这里同时置 forceExpanded，
+        // 保证「展开」在窄屏也一定回到完整主栏。
+        this.forceExpanded = true;
+        this.onAction('toggleCollapse');
+      })
+    }
+    .padding({ left: 6, right: 4, top: 2, bottom: 2 })
+    .linearGradient(this.barGradient(this.winSurface()))
+    .borderRadius(16)
+    .transition(barCollapseTransition(this.reduceMotion))
   }
 
   // 折叠胶囊：当前工具 + 展开箭头；用 Button 承载点击（真机触摸下 onClick/gesture 易被父级手势拦截）。
@@ -345,6 +383,9 @@ export struct FloatingBar {
       if (this.showFingerToggle) {
         this.ExtraCell('fingerMode', '手指', 'person_2', '\uE716')
       }
+      // 浮批：推出画布，仅保留工具栏；侧边：折叠并吸附到屏幕左右两侧。
+      this.ExtraCell('floatBoard', '浮批', 'move', '')
+      this.ExtraCell('dockSide', '侧边', 'chevron_left', '')
       if (this.showExitButton) {
         this.ExtraCell('exit', '退出', 'xmark', '\uE711')
       }

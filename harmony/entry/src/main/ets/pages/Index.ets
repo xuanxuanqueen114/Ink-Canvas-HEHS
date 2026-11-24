@@ -215,6 +215,8 @@ struct Index {
   @State replayProgress: number = 0;
   @State guideOpen: boolean = false;
   @State settingsOpen: boolean = false;
+  // 设置面板分组折叠：同时只展开一组；-1 = 全部折叠。配合滚轮/触摸滚动浏览。
+  @State settingsFold: number = 0;
   @State boardOpen: boolean = false;
   @State boardIndex: number = 0;
   @State boardPageCount: number = 1;
@@ -232,6 +234,9 @@ struct Index {
   @State inkCastHost: string = '127.0.0.1';
   @State inkCastPort: number = 9091;
   @State transparentAnnotate: boolean = false;
+  // 浮批：隐藏画布仅保留工具栏；侧边：0 底部 / 1 左 / 2 右
+  @State floatBoardMode: boolean = false;
+  @State dockSide: number = 0;
   private inkCast: InkCastClient | null = null;
   @State barDragX: number = 0;
   @State barDragY: number = 0;
@@ -319,6 +324,12 @@ struct Index {
     Badge: '',
     Question: '',
     Formula: '',
+    FormulaLatex: '',
+    Candidates: [],
+    Givens: [],
+    Goal: '',
+    Pitfalls: [],
+    Warnings: [],
     Steps: [],
     Tags: [],
     Confidence: 0.9,
@@ -482,7 +493,7 @@ struct Index {
   private applyWindowTransparency(): void {
     try {
       window.getLastWindow(getContext(this) as common.UIAbilityContext).then((win: window.Window) => {
-        win.setWindowBackgroundColor(this.transparentAnnotate ? '#00000000' : '#FFFFFFFF');
+        win.setWindowBackgroundColor((this.transparentAnnotate || this.floatBoardMode) ? '#00000000' : '#FFFFFFFF');
       }).catch((err: BusinessError) => {
         void err;
       });
@@ -683,7 +694,7 @@ struct Index {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor(this.boardOpen ? this.boardBackgroundColor() : (this.transparentAnnotate ? Color.Transparent : (this.dark ? '#FF1B1B1B' : '#FFFAFAFA')))
+        .backgroundColor(this.boardOpen ? this.boardBackgroundColor() : ((this.transparentAnnotate || this.floatBoardMode) ? Color.Transparent : (this.dark ? '#FF1B1B1B' : '#FFFAFAFA')))
 
       if (this.boardOpen && (this.boardBackground === 2 || this.boardBackground === 3)) {
         Canvas(this.boardGridContext)
@@ -728,6 +739,7 @@ struct Index {
         this.handleTouch(event);
       })
       .id('inkCanvas')
+      .visibility(this.floatBoardMode ? Visibility.Hidden : Visibility.Visible)
 
       // 常驻覆盖层画布（套索路径 / 落点动画预览；不参与命中测试）。
       Canvas(this.lassoContext)
@@ -959,6 +971,7 @@ struct Index {
             }
           })
             .margin({ bottom: 170 })
+            .offset({ x: this.barDragX, y: this.barDragY })
             .transition(overlayTransition(this.isMotionReduced()))
         }
         .width('100%')
@@ -983,6 +996,7 @@ struct Index {
             }
           })
             .margin({ bottom: 170 })
+            .offset({ x: this.barDragX, y: this.barDragY })
             .transition(overlayTransition(this.isMotionReduced()))
         }
         .width('100%')
@@ -1188,33 +1202,71 @@ struct Index {
       }
 
       if (this.settingsOpen) {
-        Stack({ alignContent: Alignment.Center }) {
+        // 与工具详情面板一致：贴工具栏上方生成，并随工具栏拖动平移（offset = barDrag）。
+        Stack({ alignContent: Alignment.Bottom }) {
+          // 背景与磨砂放在不滚动的外层容器上：Scroll 自身带 backdropBlur 时，
+          // 滚动会把模糊层一起平移，出现面板外彩色残影与内容溢出。
+          Column() {
           Scroll() {
-            Column({ space: 10 }) {
-              Text('设置').fontSize(20).fontColor(this.dark ? Color.White : Color.Black)
-              this.SettingsStartup()
-              this.SettingsCanvas()
-              this.SettingsGesture()
-              this.SettingsInkToShape()
-              this.SettingsAppearance()
-              this.SettingsBehavior()
-              this.SettingsAdvanced()
-              this.SettingsAutomation()
-              this.SettingsRand()
-              this.SettingsAbout()
-              Text('关闭').fontSize(14).fontColor(this.dark ? Color.White : Color.Black)
-                .onClick(() => { this.settingsOpen = false; })
+            Column({ space: 8 }) {
+              Row({ space: 8 }) {
+                Text('设置').fontSize(18).fontColor(this.dark ? Color.White : Color.Black)
+                Blank()
+                Text(this.settingsFold >= 0 ? '全部折叠' : '全部展开')
+                  .fontSize(11)
+                  .fontColor('#FF0067C0')
+                  .padding(6)
+                  .onClick(() => {
+                    this.settingsFold = this.settingsFold >= 0 ? -1 : 0;
+                  })
+                Text('关闭')
+                  .fontSize(12)
+                  .fontColor(this.dark ? Color.White : Color.Black)
+                  .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+                  .backgroundColor(this.dark ? '#1AFFFFFF' : '#0F000000')
+                  .borderRadius(8)
+                  .onClick(() => { this.settingsOpen = false; })
+              }
+              .width('100%')
+
+              this.SettingFoldHeader('启动选项', 0)
+              if (this.settingsFold === 0) { this.SettingsStartup() }
+              this.SettingFoldHeader('画板选项', 1)
+              if (this.settingsFold === 1) { this.SettingsCanvas() }
+              this.SettingFoldHeader('手势选项', 2)
+              if (this.settingsFold === 2) { this.SettingsGesture() }
+              this.SettingFoldHeader('墨迹识别', 3)
+              if (this.settingsFold === 3) { this.SettingsInkToShape() }
+              this.SettingFoldHeader('外观与质感', 4)
+              if (this.settingsFold === 4) { this.SettingsAppearance() }
+              this.SettingFoldHeader('PPT 选项', 5)
+              if (this.settingsFold === 5) { this.SettingsBehavior() }
+              this.SettingFoldHeader('高级选项', 6)
+              if (this.settingsFold === 6) { this.SettingsAdvanced() }
+              this.SettingFoldHeader('自动选项', 7)
+              if (this.settingsFold === 7) { this.SettingsAutomation() }
+              this.SettingFoldHeader('抽奖', 8)
+              if (this.settingsFold === 8) { this.SettingsRand() }
+              this.SettingFoldHeader('关于', 9)
+              if (this.settingsFold === 9) { this.SettingsAbout() }
             }
-            .padding(20)
+            .padding({ left: 16, right: 16, top: 10, bottom: 14 })
             .alignItems(HorizontalAlign.Start)
+            .width('100%')
           }
-          .width('92%')
-          .constraintSize({ maxWidth: this.fullLayout() ? 440 : 360 })
-          .height('82%')
-          .constraintSize({ maxHeight: 620 })
+          .width('100%')
+          .layoutWeight(1)
+          .scrollBar(BarState.Auto)
+          .edgeEffect(EdgeEffect.Spring)
+          }
+          .width('94%')
+          .constraintSize({ maxWidth: this.fullLayout() ? 460 : 380, maxHeight: '62%' })
           .backgroundColor(panelBackground(this.dark, this.blurEnabled))
           .backgroundBlurStyle(panelBlurStyle(this.blurEnabled))
-          .borderRadius(12)
+          .borderRadius(14)
+          .clip(true)
+          .margin({ bottom: this.settings.appearance.floatingBarBottomMargin + 92 })
+          .offset({ x: this.settingsPanelOffsetX(), y: this.settingsPanelOffsetY() })
           // settings 为私有对象（非 @State）：读取版本号建立渲染依赖，
           // touchSettings() 递增后整面板以最新设置值重渲染。
           .opacity(this.settingsVersion >= 0 ? 1 : 0)
@@ -1698,6 +1750,44 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   // ---- 设置面板：通用行构建器 ------------------------------------------
 
+  // 设置面板跟随工具栏时做边界钳制：面板宽高按当前窗口与 maxWidth/maxHeight 估算，
+  // 避免拖到屏幕边缘时面板顶出可视区、按钮无法点击。
+  private settingsPanelOffsetX(): number {
+    const w = Math.max(0, this.windowWidth);
+    const panelW = Math.min(w * 0.94, this.fullLayout() ? 460 : 380);
+    const half = (w - panelW) / 2;
+    return Math.max(-half, Math.min(half, this.barDragX));
+  }
+
+  private settingsPanelOffsetY(): number {
+    const h = Math.max(0, this.windowHeight);
+    const panelH = h * 0.62;
+    const bottom = this.settings.appearance.floatingBarBottomMargin + 92;
+    const minY = Math.min(0, -(h - bottom - panelH));
+    return Math.max(minY, this.barDragY);
+  }
+
+  @Builder
+  SettingFoldHeader(title: string, index: number) {
+    Row() {
+      Text((this.settingsFold === index ? '▾  ' : '▸  ') + title)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.dark ? Color.White : Color.Black)
+        .layoutWeight(1)
+      Text(this.settingsFold === index ? '收起' : '展开')
+        .fontSize(11)
+        .fontColor('#FF0067C0')
+    }
+    .width('100%')
+    .padding({ top: 9, bottom: 5 })
+    .borderRadius(8)
+    .backgroundColor(this.dark ? '#0DFFFFFF' : '#06000000')
+    .onClick(() => {
+      this.settingsFold = this.settingsFold === index ? -1 : index;
+    })
+  }
+
   @Builder
   SettingSection(title: string) {
     Text(title)
@@ -1815,7 +1905,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsStartup() {
-    this.SettingSection('启动选项')
+
     this.SettingInfo('更新经应用市场（工具面板「检查更新」）；内置升级/静默安装/开机自启已按决策禁用（平台限制，不再迁移）。')
     this.SettingToggle('开机运行后收纳到侧边栏', this.settings.startup.isFoldAtStartup, (v: boolean) => {
       this.settings.startup.isFoldAtStartup = v;
@@ -1830,7 +1920,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsCanvas() {
-    this.SettingSection('画板选项')
+
     this.SettingToggle('上传图片压缩至 1080P', this.settings.canvas.isCompressPicturesUploaded, (v: boolean) => {
       this.settings.canvas.isCompressPicturesUploaded = v;
       this.touchSettings();
@@ -1896,7 +1986,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsGesture() {
-    this.SettingSection('手势选项')
+
     this.SettingOptions('缩放/旋转变换中心点', ['画布中心点（默认）', '全部内容的中心点', '手势操作的中心点'],
       this.settings.gesture.matrixTransformCenterPoint, (i: number) => {
         this.settings.gesture.matrixTransformCenterPoint = i;
@@ -1946,7 +2036,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsInkToShape() {
-    this.SettingSection('墨迹识别选项')
+
     this.SettingToggle('启用墨迹识别', this.settings.inkToShape.isInkToShapeEnabled, (v: boolean) => {
       this.settings.inkToShape.isInkToShapeEnabled = v;
       this.controller.RecognizeShapes = v;
@@ -1956,7 +2046,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsAppearance() {
-    this.SettingSection('外观选项')
+
     this.SettingOptions('颜色主题', ['浅色主题', '深色主题', '跟随系统'],
       this.settings.appearance.theme === 1 ? 0 : (this.settings.appearance.theme === 2 ? 1 : 2),
       (i: number) => {
@@ -2051,7 +2141,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsBehavior() {
-    this.SettingSection('PPT 选项（课件模式）')
+
     this.SettingInfo('课件批注模式为 PDF；原始 PPT 经「PPT（WPS）」工具跳转 WPS 鸿蒙版查看/放映。COM 级控制不可用。')
     this.SettingToggle('显示底部翻页面板', this.settings.behavior.isShowBottomPPTNavigationPanel, (v: boolean) => {
       this.settings.behavior.isShowBottomPPTNavigationPanel = v;
@@ -2094,7 +2184,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsAdvanced() {
-    this.SettingSection('高级选项')
+
     this.SettingInfo('# 特殊屏幕模式调节触控屏触摸大小倍数；倍数为 0 即禁用手势橡皮。')
     this.SettingToggle('特殊屏幕模式', this.settings.advanced.isSpecialScreen, (v: boolean) => {
       this.settings.advanced.isSpecialScreen = v;
@@ -2161,7 +2251,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsAutomation() {
-    this.SettingSection('自动选项')
+
     this.SettingInfo('无法获取其他应用前台状态：自动收纳/进程查杀类设置仅保留值。')
     this.SettingInfo('自动收纳（前台识别）与进程查杀已按决策禁用（平台限制，不再迁移）；手动收纳可用（Alt+V 或浮条「隐藏」）。')
     this.SettingToggle('清屏时自动保存墨迹', this.settings.automation.isAutoSaveStrokesAtClear, (v: boolean) => {
@@ -2220,7 +2310,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsRand() {
-    this.SettingSection('抽奖（移植附加）')
+
     this.SettingSlider('抽取人数', this.settings.randSettings.peopleCount, 1, 200, 1, (v: number) => {
       this.settings.randSettings.peopleCount = Math.round(v);
       this.lottery.PeopleCount = Math.round(v);
@@ -2235,7 +2325,7 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
 
   @Builder
   SettingsAbout() {
-    this.SettingSection('关于 Ink Canvas Artistry')
+
     this.SettingInfo('当前版本：3.4.0（HarmonyOS 移植）· 开源协议 GPL-3.0')
     this.SettingInfo('上游：InkCanvas/Ink-Canvas-Artistry ← WXRIW/Ink-Canvas。')
     this.SettingButton('重置设置（恢复推荐默认）', '重置', () => {
@@ -2788,6 +2878,39 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
     this.selectedId = 'mouse';
     this.paletteOpen = false;
     this.shapeOpen = false;
+  }
+
+  // 浮批：隐藏画布，仅保留工具栏；窗口透明，配合系统悬浮窗可覆盖到其他应用上批注。
+  private toggleFloatBoard(): void {
+    this.floatBoardMode = !this.floatBoardMode;
+    this.applyWindowTransparency();
+    if (this.floatBoardMode) {
+      promptAction.showToast({
+        message: '已隐藏画布仅留工具栏：请在多任务卡片选择「悬浮窗」，即可浮在其他应用上批注（系统权限限制，普通应用无法自动置顶）',
+        duration: 4000
+      });
+    }
+  }
+
+  // 侧边：底部 → 左 → 右 → 底部；折叠成胶囊后吸附到屏幕左右两侧中部。
+  private toggleDockSide(): void {
+    this.dockSide = this.dockSide === 0 ? 1 : (this.dockSide === 1 ? 2 : 0);
+    if (this.dockSide === 0) {
+      this.collapsed = false;
+      this.barDragX = 0;
+      this.barDragY = 0;
+      return;
+    }
+    this.collapsed = true;
+    const side = this.dockSide;
+    setTimeout(() => {
+      const width = this.barFrameW > 0 ? this.barFrameW : 200;
+      const height = this.barFrameH > 0 ? this.barFrameH : 60;
+      const targetX = side === 1 ? 24 : Math.max(24, this.windowWidth - width - 24);
+      const targetY = Math.max(24, this.windowHeight / 2 - height / 2);
+      this.barDragX = targetX - this.barFrameX;
+      this.barDragY = targetY - this.barFrameY;
+    }, 140);
   }
 
   // 手指/笔尖模式快速切换（浮条按钮，等价设置「启用笔尖模式」）。
@@ -3848,8 +3971,26 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
     if (result.Formula !== '') {
       text += '\n公式：' + result.Formula;
     }
+    if (result.FormulaLatex !== '') {
+      text += '\nLaTeX：' + result.FormulaLatex;
+    }
+    if (result.Candidates.length > 0) {
+      text += '\n候选公式：' + result.Candidates.join('；');
+    }
+    if (result.Givens.length > 0) {
+      text += '\n已知：' + result.Givens.join('；');
+    }
+    if (result.Goal !== '') {
+      text += '\n求：' + result.Goal;
+    }
     for (let i = 0; i < result.Steps.length; i++) {
       text += '\n' + (i + 1) + '. ' + result.Steps[i];
+    }
+    if (result.Pitfalls.length > 0) {
+      text += '\n易错：' + result.Pitfalls.join('；');
+    }
+    if (result.Warnings.length > 0) {
+      text += '\n提示：' + result.Warnings.join('；');
     }
     text += '\n（' + result.Engine + '）';
     this.copyText(text, '识别结果已复制');
@@ -3972,6 +4113,10 @@ this.ToolEntry('AI 圈选识题', 'aiCapture')
       this.enterMouseMode();
     } else if (id === 'fingerMode') {
       this.toggleFingerMode();
+    } else if (id === 'floatBoard') {
+      this.toggleFloatBoard();
+    } else if (id === 'dockSide') {
+      this.toggleDockSide();
     } else if (id === 'exit') {
       this.requestExit();
     } else if (id === 'clear' || id === 'clearAndMouse') {

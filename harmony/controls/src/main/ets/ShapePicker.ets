@@ -55,7 +55,8 @@ export struct ShapePreviewCell {
       HighlighterAlpha: 96,
       TaperKind: 0
     };
-    const size = 50;
+    const size = this.cellSize;
+    const k = size / 50;
     this.context.clearRect(0, 0, size, size);
     this.context.save();
     if (this.rotation === 90) {
@@ -63,7 +64,7 @@ export struct ShapePreviewCell {
       this.context.rotate(Math.PI / 2);
       this.context.translate(-size / 2, -size / 2);
     }
-    const strokes: StrokeSummary[] = generate(this.kind, 6, 44, 44, 6, attributes);
+    const strokes: StrokeSummary[] = generate(this.kind, 6 * k, 44 * k, 44 * k, 6 * k, attributes);
     for (let i = 0; i < strokes.length; i++) {
       const points: InkPoint[] = [];
       for (let p = 0; p < strokes[i].Points.length; p++) {
@@ -103,35 +104,61 @@ export struct ShapePicker {
   };
 
   build() {
-    Column({ space: -8 * this.uiScale }) {
-      ForEach(SHAPE_MENU_ROWS, (row: ShapeMenuEntry[], rowIndex: number) => {
-        Row() {
-          ForEach(row, (entry: ShapeMenuEntry) => {
-            ShapePreviewCell({
-              kind: entry.Kind,
-              label: entry.Label,
-              rotation: entry.Rotation,
-              selected: this.selectedKind === entry.Kind,
-              dark: this.dark,
-              cellSize: 50 * this.uiScale,
-              onSelect: (kind: number, longPress: boolean) => {
-                this.onSelect(kind, longPress);
-              }
-            })
-              .margin({
-                left: entry.Margin[0] * this.uiScale,
-                top: entry.Margin[1] * this.uiScale,
-                right: entry.Margin[2] * this.uiScale,
-                bottom: entry.Margin[3] * this.uiScale
+    Scroll() {
+      Column({ space: 0 }) {
+        ForEach(SHAPE_MENU_ROWS, (row: ShapeMenuEntry[], rowIndex: number) => {
+          Row() {
+            ForEach(row, (entry: ShapeMenuEntry) => {
+              ShapePreviewCell({
+                kind: entry.Kind,
+                label: entry.Label,
+                rotation: entry.Rotation,
+                selected: this.selectedKind === entry.Kind,
+                dark: this.dark,
+                cellSize: 50 * this.cellScale(),
+                onSelect: (kind: number, longPress: boolean) => {
+                  this.onSelect(kind, longPress);
+                }
               })
-          }, (entry: ShapeMenuEntry) => entry.Id)
-        }
-      }, (row: ShapeMenuEntry[], rowIndex: number) => rowIndex.toString())
+                .margin({
+                  left: entry.Margin[0] * this.cellScale(),
+                  top: entry.Margin[1] * this.cellScale(),
+                  right: entry.Margin[2] * this.cellScale(),
+                  bottom: entry.Margin[3] * this.cellScale()
+                })
+            }, (entry: ShapeMenuEntry) => entry.Id)
+          }
+        }, (row: ShapeMenuEntry[], rowIndex: number) => rowIndex.toString())
+      }
+      .padding(8 * this.uiScale)
     }
-    .padding(8 * this.uiScale)
+    .width(this.pickerWidth())
+    .scrollBar(BarState.On)
+    .edgeEffect(EdgeEffect.Spring)
+    .constraintSize({ maxHeight: '60%' })
     .backgroundColor(themeTokens(this.dark).floatBarBackground)
     .backgroundBlurStyle(this.materialBlur ? BlurStyle.Thin : BlurStyle.NONE)
     .border({ width: 1, color: themeTokens(this.dark).floatBarBorder })
     .borderRadius(5 * this.uiScale)
+  }
+
+  // 显式宽度：Scroll 内部 Column 自适应时可能收缩为 0，导致面板不可见。
+  private pickerWidth(): number {
+    let maxCols = 1;
+    for (let i = 0; i < SHAPE_MENU_ROWS.length; i++) {
+      if (SHAPE_MENU_ROWS[i].length > maxCols) {
+        maxCols = SHAPE_MENU_ROWS[i].length;
+      }
+    }
+    return maxCols * 50 * this.cellScale() + 16 * this.cellScale();
+  }
+
+  // 形状格子的缩放上限：悬浮栏放得再大，也不让面板格子无限放大导致整页超出屏幕。
+  private cellScale(): number {
+    const scale = this.uiScale;
+    if (scale > 0 && scale < 1.3) {
+      return scale < 0.8 ? 0.8 : scale;
+    }
+    return 1.3;
   }
 }
