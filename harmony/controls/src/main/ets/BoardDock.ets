@@ -29,15 +29,21 @@ export struct BoardDock {
     return hex.length === 1 ? '0' + hex : hex;
   }
 
-  private dockTint(): string {
-    // 与主浮动工具栏一致：始终深色玻璃胶囊（浅色主题下也是深色），图标/标签用浅色。
+  // 与主浮动工具栏一致的深色玻璃：低不透明度 + 顶部白光 + 深灰渐变。
+  private dockGradient(): LinearGradientOptions {
     const intensity = Math.min(100, Math.max(0, this.glassIntensity));
-    const alpha = 0.9 - intensity * 0.005;
-    return '#' + this.alphaHex(alpha * 255) + '1A1A1E';
+    const alpha = Math.max(0.22, Math.min(0.70, 0.62 - (intensity - 20) * 0.004));
+    const top = '#' + this.alphaHex(alpha * 255) + '232329';
+    const bottom = '#' + this.alphaHex(Math.max(0.18, alpha - 0.06) * 255) + '141419';
+    return {
+      angle: 180,
+      colors: [['#1FFFFFFF', 0.0], [top, 0.08], [bottom, 1.0]]
+    };
   }
 
   private glassRadius(): number {
-    return 2 + Math.min(100, Math.max(0, this.glassIntensity)) * 0.32;
+    const intensity = Math.min(100, Math.max(0, this.glassIntensity));
+    return Math.max(12, Math.min(32, 18 + intensity * 0.14));
   }
 
   private backgroundLabel(): string {
@@ -106,9 +112,9 @@ export struct BoardDock {
   DockGroup() {
     Row({ space: 2 * this.scaleFactor() })
       .padding(4 * this.scaleFactor())
-      .backgroundColor(this.dockTint())
-      .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: '#33FFFFFF' })
+      .linearGradient(this.dockGradient())
+      .borderRadius(22)
+      .border({ width: 1, color: '#66FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
   }
 
@@ -122,9 +128,9 @@ export struct BoardDock {
         this.DockButton('pageAdd', '加页', 'plus', false)
       }
       .padding(4 * this.scaleFactor())
-      .backgroundColor(this.dockTint())
-      .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: '#33FFFFFF' })
+      .linearGradient(this.dockGradient())
+      .borderRadius(22)
+      .border({ width: 1, color: '#66FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
 
       // 中栏：工具
@@ -142,9 +148,9 @@ export struct BoardDock {
         this.DockButton('tools', '更多', 'wrench_and_screwdriver', this.selectedId === 'tools')
       }
       .padding(4 * this.scaleFactor())
-      .backgroundColor(this.dockTint())
-      .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: '#33FFFFFF' })
+      .linearGradient(this.dockGradient())
+      .borderRadius(22)
+      .border({ width: 1, color: '#66FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
 
       // 右栏：文件与退出
@@ -155,12 +161,18 @@ export struct BoardDock {
         this.DockButton('exit', '退出', 'arrow_right_to_line', false)
       }
       .padding(4 * this.scaleFactor())
-      .backgroundColor(this.dockTint())
-      .borderRadius(this.tokens().barCorner)
-      .border({ width: 1, color: '#33FFFFFF' })
+      .linearGradient(this.dockGradient())
+      .borderRadius(22)
+      .border({ width: 1, color: '#66FFFFFF' })
       .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
     }
     .padding(4 * this.scaleFactor())
     .constraintSize({ maxWidth: '98%' })
+    .shadow({
+      radius: this.materialBlur ? 22 : 0,
+      color: this.materialBlur ? '#2E000000' : '#00000000',
+      offsetX: 0,
+      offsetY: this.materialBlur ? 8 : 0
+    })
   }
 }

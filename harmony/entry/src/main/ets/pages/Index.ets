@@ -1292,6 +1292,13 @@ struct Index {
           .backgroundColor(panelBackground(this.dark, this.blurEnabled))
           .backgroundBlurStyle(panelBlurStyle(this.blurEnabled))
           .borderRadius(14)
+          .border({ width: 1, color: this.blurEnabled ? '#66FFFFFF' : (this.dark ? '#26FFFFFF' : '#14000000') })
+          .shadow({
+            radius: this.blurEnabled ? 24 : 0,
+            color: '#26000000',
+            offsetX: 0,
+            offsetY: this.blurEnabled ? 10 : 0
+          })
           .clip(true)
           .margin({ bottom: this.panelBottomGap(12) })
           .offset({ x: this.settingsPanelOffsetX(), y: 0 })
@@ -1493,6 +1500,13 @@ struct Index {
           .backgroundColor(panelBackground(this.dark, this.blurEnabled))
           .backgroundBlurStyle(panelBlurStyle(this.blurEnabled))
           .borderRadius(10)
+          .border({ width: 1, color: this.blurEnabled ? '#66FFFFFF' : (this.dark ? '#26FFFFFF' : '#14000000') })
+          .shadow({
+            radius: this.blurEnabled ? 22 : 0,
+            color: '#26000000',
+            offsetX: 0,
+            offsetY: this.blurEnabled ? 8 : 0
+          })
           .clip(true)
           .margin({ bottom: this.panelBottomGap(10) })
           .offset({ x: this.toolsPanelOffsetX(), y: 0 })

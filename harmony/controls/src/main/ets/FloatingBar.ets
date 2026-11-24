@@ -167,23 +167,41 @@ export struct FloatingBar {
     return hex.length === 1 ? '0' + hex : hex;
   }
 
-  // 通透度越高：深色底越透明、模糊越强（与 Windows 端深色胶囊一致）。
-  private glassTint(): string {
+  // 通透度越高：深色底越透明、模糊越强（对齐 iOS 玻璃拟态：低不透明度 + 强模糊 + 白色高光边）。
+  private glassAlpha(): number {
     const intensity = Math.min(100, Math.max(0, this.glassIntensity));
-    const alpha = 0.9 - intensity * 0.005;
-    return '#' + this.alphaHex(alpha * 255) + '1A1A1E';
+    return Math.max(0.22, Math.min(0.70, 0.62 - (intensity - 20) * 0.004));
   }
 
+  // 背景模糊：参考图 20~30 量级，随通透度在 18~32 之间。
   private glassRadius(): number {
-    return 2 + Math.min(100, Math.max(0, this.glassIntensity)) * 0.32;
+    const intensity = Math.min(100, Math.max(0, this.glassIntensity));
+    return Math.max(12, Math.min(32, 18 + intensity * 0.14));
+  }
+
+  private glassTop(): string {
+    return '#' + this.alphaHex(this.glassAlpha() * 255) + '232329';
+  }
+
+  private glassBottom(): string {
+    const a = Math.max(0.18, this.glassAlpha() - 0.06);
+    return '#' + this.alphaHex(a * 255) + '141419';
   }
 
   private barFill(): LinearGradientOptions {
     if (!this.materialBlur) {
       return this.barGradient(this.winSurface());
     }
-    const tint = this.glassTint();
-    return { angle: 135, colors: [[tint, 0.0], [tint, 1.0]] };
+    // 顶部 7% 叠一层白色高光（模拟玻璃上沿内反光），其余为深灰渐变（顶亮底暗）。
+    return {
+      angle: 180,
+      colors: [
+        ['#1FFFFFFF', 0.0],
+        [this.glassTop(), 0.07],
+        [this.glassBottom(), 0.62],
+        [this.glassBottom(), 1.0]
+      ]
+    };
   }
 
   // 窄屏自动折叠：19 按钮主栏 + 拖动把手 + 手势卡的实际宽度估算。
@@ -224,8 +242,15 @@ export struct FloatingBar {
     .linearGradient(this.barFill())
     .backdropBlur(this.materialBlur ? this.glassRadius() : 0)
     .backgroundBlurStyle(BlurStyle.NONE)
-    .borderRadius(16)
-    .border({ width: 1, color: this.winBorder() })
+    .borderRadius(26)
+    .border({ width: 1, color: this.materialBlur ? '#66FFFFFF' : this.winBorder() })
+    // 柔和外投影：把玻璃胶囊从画布上"抬起"，对齐 iOS 玻璃拟态的层次。
+    .shadow({
+      radius: this.materialBlur ? 26 : 0,
+      color: this.materialBlur ? '#2E000000' : '#00000000',
+      offsetX: 0,
+      offsetY: this.materialBlur ? 10 : 0
+    })
     .gesture(
       PanGesture()
         .onActionStart(() => {
@@ -310,8 +335,7 @@ export struct FloatingBar {
       })
     }
     .padding({ left: 6, right: 4, top: 2, bottom: 2 })
-    .linearGradient(this.barGradient(this.winSurface()))
-    .borderRadius(16)
+    .borderRadius(22)
     .transition(barCollapseTransition(this.reduceMotion))
   }
 
