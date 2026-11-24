@@ -55,7 +55,7 @@ export struct FloatingBar {
 
   // Windows 端工具栏视觉：深色胶囊底、白色图标、实心蓝选中。
   private winIcon(): string {
-    return '#F2FFFFFF';
+    return '#FFFFFFFF';
   }
 
   private winSelected(): string {
@@ -155,10 +155,19 @@ export struct FloatingBar {
   }
 
   private buttonBase(): ResourceColor {
-    if (this.transparentButtons) {
+    // 玻璃模式下按钮不画底色：整条工具栏是一块连续玻璃，避免"玻璃里嵌一块深色条/格子"。
+    if (this.transparentButtons || this.materialBlur) {
       return Color.Transparent;
     }
     return '#1AFFFFFF';
+  }
+
+  // 内部卡片底色：玻璃模式下透明（由外层统一承载），非玻璃模式保持原实心底。
+  private cardSurface(base: string): LinearGradientOptions {
+    if (this.materialBlur) {
+      return { angle: 180, colors: [['#00FFFFFF', 0.0], ['#00FFFFFF', 1.0]] };
+    }
+    return this.barGradient(base);
   }
 
   private alphaHex(alpha: number): string {
@@ -169,8 +178,9 @@ export struct FloatingBar {
 
   // 通透度越高：深色底越透明、模糊越强（对齐 iOS 玻璃拟态：低不透明度 + 强模糊 + 白色高光边）。
   private glassAlpha(): number {
+    // 白板上玻璃会叠成中灰，白图标需要足够底色对比；默认偏实，通透度滑块仍可调到更透。
     const intensity = Math.min(100, Math.max(0, this.glassIntensity));
-    return Math.max(0.22, Math.min(0.70, 0.62 - (intensity - 20) * 0.004));
+    return Math.max(0.36, Math.min(0.93, 0.82 - (intensity - 20) * 0.0055));
   }
 
   // 背景模糊：参考图 20~30 量级，随通透度在 18~32 之间。
@@ -296,7 +306,7 @@ export struct FloatingBar {
     .height(44 * this.uiScale)
     .justifyContent(FlexAlign.Center)
     .borderRadius(22)
-    .linearGradient(this.barGradient(this.winSurfaceAlt()))
+    .linearGradient(this.cardSurface(this.winSurfaceAlt()))
     .onClick(() => {
       this.onAction('toggleCollapse');
     })
@@ -415,7 +425,7 @@ export struct FloatingBar {
       }
     }
     .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-    .linearGradient(this.barGradient(this.winSurface()))
+    .linearGradient(this.cardSurface(this.winSurface()))
     .borderRadius(16)
     .transition(barCollapseTransition(this.reduceMotion))
   }
@@ -504,7 +514,7 @@ export struct FloatingBar {
     .height(Math.max(44, 44 * this.uiScale))
     .justifyContent(FlexAlign.Center)
     .borderRadius(22)
-    .linearGradient(this.barGradient(this.winSurfaceAlt()))
+    .linearGradient(this.cardSurface(this.winSurfaceAlt()))
     .transition(barCollapseTransition(this.reduceMotion))
     .onClick(() => {
       this.onAction('gesture');
@@ -522,7 +532,7 @@ export struct FloatingBar {
     .height(Math.max(44, 27.778 * this.uiScale))
     .justifyContent(FlexAlign.Center)
     .borderRadius(22)
-    .linearGradient(this.barGradient(this.winSurfaceAlt()))
+    .linearGradient(this.cardSurface(this.winSurfaceAlt()))
     .onClick(() => {
       this.onAction('pptExit');
     })

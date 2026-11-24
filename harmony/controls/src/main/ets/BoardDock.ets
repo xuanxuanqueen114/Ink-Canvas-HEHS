@@ -32,7 +32,7 @@ export struct BoardDock {
   // 与主浮动工具栏一致的深色玻璃：低不透明度 + 顶部白光 + 深灰渐变。
   private dockGradient(): LinearGradientOptions {
     const intensity = Math.min(100, Math.max(0, this.glassIntensity));
-    const alpha = Math.max(0.22, Math.min(0.70, 0.62 - (intensity - 20) * 0.004));
+    const alpha = Math.max(0.36, Math.min(0.93, 0.82 - (intensity - 20) * 0.0055));
     const top = '#' + this.alphaHex(alpha * 255) + '232329';
     const bottom = '#' + this.alphaHex(Math.max(0.18, alpha - 0.06) * 255) + '141419';
     return {
