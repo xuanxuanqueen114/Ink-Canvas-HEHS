@@ -52,7 +52,8 @@ import {
   AiResultCard,
   AiNotesPanel,
   ShapeSnapPanel,
-  BoardDock
+  BoardDock,
+  ChemBoard
 } from '@inkcanvas/controls';
 import {
   InkController,
@@ -226,6 +227,8 @@ struct Index {
   @State settingsOpen: boolean = false;
   // 设置面板分组折叠：同时只展开一组；-1 = 全部折叠。配合滚轮/触摸滚动浏览。
   @State settingsFold: number = 0;
+  // 分子结构绘制面板（ChemDraw 基本功能子集，独立于墨迹文档）
+  @State chemOpen: boolean = false;
   @State boardOpen: boolean = false;
   @State boardIndex: number = 0;
   @State boardPageCount: number = 1;
@@ -1698,6 +1701,20 @@ struct Index {
         .height('100%')
         .backgroundColor('#33000000')
 
+      }
+
+      if (this.chemOpen) {
+        Stack({ alignContent: Alignment.Center }) {
+          ChemBoard({
+            dark: this.dark,
+            onClose: () => {
+              this.chemOpen = false;
+            }
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#33000000')
       }
     }
     .id('inkRoot')
@@ -3466,7 +3483,8 @@ struct Index {
       || this.aiResultOpen
       || this.aiNotesGenerating
       || this.aiNotesOpen
-      || this.aiSnapOpen;
+      || this.aiSnapOpen
+      || this.chemOpen;
   }
 
   private inFloatingBar(x: number, y: number): boolean {
@@ -4302,6 +4320,12 @@ struct Index {
       this.undoAction();
     } else if (id === 'redo') {
       this.redoAction();
+    } else if (id === 'chem') {
+      this.toolsOpen = false;
+      this.paletteOpen = false;
+      this.shapeOpen = false;
+      this.selectionToolbarOpen = false;
+      this.chemOpen = true;
     } else if (id === 'toggleCollapse') {
       animateMotion(this.getUIContext(), this.isMotionReduced(), MOTION_STANDARD, () => {
         this.collapsed = !this.collapsed;

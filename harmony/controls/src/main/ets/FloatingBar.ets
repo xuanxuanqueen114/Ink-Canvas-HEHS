@@ -420,6 +420,8 @@ export struct FloatingBar {
       // 浮批：推出画布，仅保留工具栏；侧边：折叠并吸附到屏幕左右两侧。
       this.ExtraCell('floatBoard', '浮批', 'move', '')
       this.ExtraCell('dockSide', '侧边', 'chevron_left', '')
+      // 分子式：苯环图标按钮（目录外，保持 19 项 parity 不变）。
+      this.ChemCell()
       if (this.showExitButton) {
         this.ExtraCell('exit', '退出', 'xmark', '\uE711')
       }
@@ -457,6 +459,44 @@ export struct FloatingBar {
     .backgroundColor(this.selectedId === id ? this.winSelected() : this.buttonBase())
     .onClick(() => {
       this.onAction(id);
+    })
+  }
+
+  // 分子式按钮：系统 symbol 里没有苯环，这里用六边形 + 内圈自绘，保证任何字体环境下都能显示。
+  @Builder
+  ChemCell() {
+    Column() {
+      Stack({ alignContent: Alignment.Center }) {
+        Polygon()
+          .width(21)
+          .height(21)
+          .points([[10.5, 0.5], [18.6, 5.2], [18.6, 15.8], [10.5, 20.5], [2.4, 15.8], [2.4, 5.2]])
+          .fill(Color.Transparent)
+          .stroke(this.winIcon())
+          .strokeWidth(this.selectedId === 'chem' ? 1.9 : 1.4)
+        Circle()
+          .width(7)
+          .height(7)
+          .fill(Color.Transparent)
+          .stroke(this.winIcon())
+          .strokeWidth(1.3)
+      }
+      .width(22 * this.uiScale)
+      .height(22 * this.uiScale)
+      if (this.showLabels) {
+        Text('分子式')
+          .fontSize(this.tokens().labelSize * this.uiScale)
+          .fontColor(this.winIcon())
+          .margin({ top: -1.389 * this.uiScale })
+      }
+    }
+    .width(Math.max(44, this.tokens().buttonWidth * this.uiScale))
+    .height(Math.max(44, this.tokens().buttonHeight * this.uiScale))
+    .justifyContent(FlexAlign.Center)
+    .borderRadius(this.selectedId === 'chem' ? 12 : 10)
+    .backgroundColor(this.selectedId === 'chem' ? this.winSelected() : this.buttonBase())
+    .onClick(() => {
+      this.onAction('chem');
     })
   }
 

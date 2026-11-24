@@ -5,6 +5,8 @@ export { FLOATING_BAR_BUTTONS, catalogSummary } from './src/main/ets/FloatingBar
 export type { FloatingBarButton, FloatingBarCatalogSummary } from './src/main/ets/FloatingBarCatalog';
 export { FloatingBar } from './src/main/ets/FloatingBar';
 export { BoardDock } from './src/main/ets/BoardDock';
+export { ChemBoard } from './src/main/ets/ChemBoard';
+export type { ChemAtom, ChemBond } from './src/main/ets/ChemBoard';
 export {
   PEN_COLORS_DARK,
   PEN_COLORS_LIGHT,
