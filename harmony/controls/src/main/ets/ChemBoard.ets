@@ -16,6 +16,16 @@ export interface ChemBond {
   B: number;
   Order: number;
   Wedge: boolean;
+  Hashed: boolean;
+}
+
+// 苯环等芳香环的内圈标记（随环一起创建/删除）
+export interface ChemAromatic {
+  Id: number;
+  X: number;
+  Y: number;
+  R: number;
+  Atoms: number[];
 }
 
 interface ChemTool {
@@ -31,7 +41,7 @@ interface ChemRing {
 }
 
 const BOND_LENGTH: number = 42;
-const ANGLE_STEP: number = Math.PI / 12;
+const ANGLE_STEP: number = Math.PI / 6;
 const HIT_ATOM: number = 16;
 const HIT_BOND: number = 9;
 const SNAP: number = 15;
@@ -44,6 +54,7 @@ const CHEM_TOOLS: ChemTool[] = [
   { Id: 'bond2', Label: '双键' },
   { Id: 'bond3', Label: '三键' },
   { Id: 'wedge', Label: '楔形' },
+  { Id: 'hashed', Label: '虚楔' },
   { Id: 'erase', Label: '橡皮' },
   { Id: 'rings', Label: '环' },
   { Id: 'element', Label: '元素' },
@@ -62,11 +73,16 @@ const CHEM_RINGS: ChemRing[] = [
 @Component
 export struct ChemBoard {
   @Prop dark: boolean = false;
+  // 是否接管触摸：false 时化学层让开，白板批注可正常书写（两者共存）
+  @Prop active: boolean = true;
+  onActivate: () => void = () => {
+  };
   onExit: () => void = () => {
   };
 
   @State atoms: ChemAtom[] = [];
   @State bonds: ChemBond[] = [];
+  @State aromatics: ChemAromatic[] = [];
   @State tool: string = 'select';
   @State pendingId: number = -1;
   @State selectedId: number = -1;
@@ -101,7 +117,7 @@ export struct ChemBoard {
   }
 
   private snapshot(): void {
-    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds, r: this.aromatics }));
     if (this.undoStack.length > 80) {
       this.undoStack.shift();
     }
@@ -112,6 +128,7 @@ export struct ChemBoard {
     const state: ChemHistory = JSON.parse(json) as ChemHistory;
     this.atoms = state.a;
     this.bonds = state.b;
+    this.aromatics = state.r === undefined ? [] : state.r;
     let maxId = 0;
     for (let i = 0; i < this.atoms.length; i++) {
       if (this.atoms[i].Id > maxId) {
@@ -131,7 +148,7 @@ export struct ChemBoard {
     if (last === undefined) {
       return;
     }
-    this.redoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    this.redoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds, r: this.aromatics }));
     this.restore(last);
     this.pendingId = -1;
     this.selectedId = -1;
@@ -142,7 +159,7 @@ export struct ChemBoard {
     if (next === undefined) {
       return;
     }
-    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds }));
+    this.undoStack.push(JSON.stringify({ a: this.atoms, b: this.bonds, r: this.aromatics }));
     this.restore(next);
     this.pendingId = -1;
     this.selectedId = -1;
@@ -203,7 +220,7 @@ export struct ChemBoard {
     return atom;
   }
 
-  private addBond(a: number, b: number, order: number, wedge: boolean): void {
+  private addBond(a: number, b: number, order: number, wedge: boolean, hashed: boolean): void {
     if (a === b) {
       return;
     }
@@ -212,13 +229,30 @@ export struct ChemBoard {
       if ((e.A === a && e.B === b) || (e.A === b && e.B === a)) {
         e.Order = order;
         e.Wedge = wedge;
+        e.Hashed = hashed;
         this.bonds = this.bonds.slice();
         return;
       }
     }
-    const bond: ChemBond = { Id: this.nextId, A: a, B: b, Order: order, Wedge: wedge };
+    const bond: ChemBond = { Id: this.nextId, A: a, B: b, Order: order, Wedge: wedge, Hashed: hashed };
     this.nextId++;
     this.bonds = this.bonds.concat([bond]);
+  }
+
+  // ChemDraw 手感：点已有键循环切换 单→双→三→单。
+  private cycleBondOrder(x: number, y: number): boolean {
+    const bond = this.bondAt(x, y);
+    if (bond === null) {
+      return false;
+    }
+    this.snapshot();
+    bond.Order = bond.Order >= 3 ? 1 : bond.Order + 1;
+    if (bond.Order > 1) {
+      bond.Wedge = false;
+      bond.Hashed = false;
+    }
+    this.bonds = this.bonds.slice();
+    return true;
   }
 
   private bondOrder(): number {
@@ -243,6 +277,7 @@ export struct ChemBoard {
     this.snapshot();
     const order = this.bondOrder();
     const wedge = this.tool === 'wedge';
+    const hashed = this.tool === 'hashed';
     let anchor: ChemAtom | null = null;
     if (this.anchorId >= 0) {
       anchor = this.atomById(this.anchorId);
@@ -255,12 +290,12 @@ export struct ChemBoard {
       const a = this.addAtom(this.snap(x), this.snap(y), 'C');
       const point = this.targetFrom(a.X, a.Y, -Math.PI / 6);
       const b = this.addAtom(point[0], point[1], 'C');
-      this.addBond(a.Id, b.Id, order, wedge);
+      this.addBond(a.Id, b.Id, order, wedge, hashed);
       this.pendingId = b.Id;
       return;
     }
     if (hit !== null && hit.Id !== anchor.Id) {
-      this.addBond(anchor.Id, hit.Id, order, wedge);
+      this.addBond(anchor.Id, hit.Id, order, wedge, hashed);
       this.pendingId = hit.Id;
       return;
     }
@@ -272,7 +307,7 @@ export struct ChemBoard {
     }
     const point = this.targetFrom(anchor.X, anchor.Y, angle);
     const end = this.addAtom(point[0], point[1], 'C');
-    this.addBond(anchor.Id, end.Id, order, wedge);
+    this.addBond(anchor.Id, end.Id, order, wedge, hashed);
     this.pendingId = end.Id;
   }
 
@@ -289,8 +324,16 @@ export struct ChemBoard {
       ));
     }
     for (let i = 0; i < sides; i++) {
-      const order = aromatic && i % 2 === 0 ? 2 : 1;
-      this.addBond(created[i].Id, created[(i + 1) % sides].Id, order, false);
+      this.addBond(created[i].Id, created[(i + 1) % sides].Id, 1, false, false);
+    }
+    if (aromatic) {
+      const ids: number[] = [];
+      for (let i = 0; i < created.length; i++) {
+        ids.push(created[i].Id);
+      }
+      const ring: ChemAromatic = { Id: this.nextId, X: cx, Y: cy, R: radius * 0.62, Atoms: ids };
+      this.nextId++;
+      this.aromatics = this.aromatics.concat([ring]);
     }
     this.pendingId = -1;
     this.selectedId = -1;
@@ -302,6 +345,7 @@ export struct ChemBoard {
       this.snapshot();
       this.atoms = this.atoms.filter((item: ChemAtom) => item.Id !== atom.Id);
       this.bonds = this.bonds.filter((item: ChemBond) => item.A !== atom.Id && item.B !== atom.Id);
+      this.aromatics = this.aromatics.filter((ring: ChemAromatic) => ring.Atoms.indexOf(atom.Id) < 0);
       this.pendingId = -1;
       return;
     }
@@ -354,7 +398,7 @@ export struct ChemBoard {
         continue;
       }
       seen.push(key);
-      nextBonds.push({ Id: bond.Id, A: a, B: b, Order: bond.Order, Wedge: bond.Wedge });
+      nextBonds.push({ Id: bond.Id, A: a, B: b, Order: bond.Order, Wedge: bond.Wedge, Hashed: bond.Hashed });
     }
     this.atoms = mapped;
     this.bonds = nextBonds;
@@ -416,6 +460,11 @@ export struct ChemBoard {
         return;
       }
       const hit = this.atomAt(x, y);
+      // 点到已有键：循环切换键级（单→双→三→单），与 ChemDraw 一致。
+      if (hit === null && this.cycleBondOrder(x, y)) {
+        this.previewing = false;
+        return;
+      }
       this.anchorId = hit === null ? -1 : hit.Id;
       this.previewing = true;
     } else if (event.type === TouchType.Move) {
@@ -513,19 +562,28 @@ export struct ChemBoard {
       const y2 = s[3];
       const nx = s[4];
       const ny = s[5];
-      if (bond.Order <= 1) {
-        d += 'M ' + this.px(x1) + ' ' + this.px(y1) + ' L ' + this.px(x2) + ' ' + this.px(y2) + ' ';
-      } else if (bond.Order === 2) {
-        d += 'M ' + this.px(x1 + nx * 2.6) + ' ' + this.px(y1 + ny * 2.6)
-          + ' L ' + this.px(x2 + nx * 2.6) + ' ' + this.px(y2 + ny * 2.6) + ' ';
-        d += 'M ' + this.px(x1 - nx * 2.6) + ' ' + this.px(y1 - ny * 2.6)
-          + ' L ' + this.px(x2 - nx * 2.6) + ' ' + this.px(y2 - ny * 2.6) + ' ';
-      } else {
-        d += 'M ' + this.px(x1) + ' ' + this.px(y1) + ' L ' + this.px(x2) + ' ' + this.px(y2) + ' ';
-        d += 'M ' + this.px(x1 + nx * 3.4) + ' ' + this.px(y1 + ny * 3.4)
-          + ' L ' + this.px(x2 + nx * 3.4) + ' ' + this.px(y2 + ny * 3.4) + ' ';
-        d += 'M ' + this.px(x1 - nx * 3.4) + ' ' + this.px(y1 - ny * 3.4)
-          + ' L ' + this.px(x2 - nx * 3.4) + ' ' + this.px(y2 - ny * 3.4) + ' ';
+      if (bond.Hashed) {
+        // 虚线楔形：由窄到宽的一组短横线（ChemDraw 的 hashed wedge）。
+        for (let k = 1; k <= 5; k++) {
+          const t = k / 6;
+          const cx = x1 + (x2 - x1) * t;
+          const cy = y1 + (y2 - y1) * t;
+          const half = 1.2 + 4.2 * t;
+          d += 'M ' + this.px(cx - nx * half) + ' ' + this.px(cy - ny * half)
+            + ' L ' + this.px(cx + nx * half) + ' ' + this.px(cy + ny * half) + ' ';
+        }
+        continue;
+      }
+      d += 'M ' + this.px(x1) + ' ' + this.px(y1) + ' L ' + this.px(x2) + ' ' + this.px(y2) + ' ';
+      if (bond.Order === 2) {
+        // 双键：主线 + 单侧平行副线（与 ChemDraw 一致，不再两侧对称）。
+        d += 'M ' + this.px(x1 - nx * 3.6) + ' ' + this.px(y1 - ny * 3.6)
+          + ' L ' + this.px(x2 - nx * 3.6) + ' ' + this.px(y2 - ny * 3.6) + ' ';
+      } else if (bond.Order >= 3) {
+        d += 'M ' + this.px(x1 - nx * 3.6) + ' ' + this.px(y1 - ny * 3.6)
+          + ' L ' + this.px(x2 - nx * 3.6) + ' ' + this.px(y2 - ny * 3.6) + ' ';
+        d += 'M ' + this.px(x1 + nx * 3.6) + ' ' + this.px(y1 + ny * 3.6)
+          + ' L ' + this.px(x2 + nx * 3.6) + ' ' + this.px(y2 + ny * 3.6) + ' ';
       }
     }
     return d;
@@ -630,6 +688,7 @@ export struct ChemBoard {
       .backgroundColor(this.tool === item.Id ? this.accent() : '#1AFFFFFF')
       .borderRadius(7)
       .onClick(() => {
+        this.onActivate();
         if (item.Id === 'clean') {
           this.cleanUp();
         }
@@ -683,6 +742,7 @@ export struct ChemBoard {
     .backgroundColor(this.tool === ring.Id ? '#FF38E1FF' : '#1AFFFFFF')
     .borderRadius(7)
     .onClick(() => {
+      this.onActivate();
       this.tool = ring.Id;
       this.ringMenuOpen = false;
       this.pendingId = -1;
@@ -712,6 +772,7 @@ export struct ChemBoard {
         .width('100%')
         .height('100%')
         .backgroundColor(Color.Transparent)
+        .hitTestBehavior(this.active ? HitTestMode.Default : HitTestMode.None)
         .onTouch((event: TouchEvent) => {
           this.onTouchEvent(event);
         })
@@ -722,7 +783,8 @@ export struct ChemBoard {
         .commands(this.bondsStrokePath())
         .fill(Color.Transparent)
         .stroke(this.lineColor())
-        .strokeWidth(1.8)
+        .strokeWidth(2.2)
+        .strokeLineCap(LineCapStyle.Round)
         .hitTestBehavior(HitTestMode.None)
 
       Path()
@@ -736,6 +798,17 @@ export struct ChemBoard {
       ForEach(this.atoms, (atom: ChemAtom) => {
         this.AtomView(atom)
       }, (atom: ChemAtom) => 'atom-' + atom.Id + '-' + atom.Element + '-' + atom.X + '-' + atom.Y)
+
+      ForEach(this.aromatics, (ring: ChemAromatic) => {
+        Circle()
+          .width(ring.R * 2)
+          .height(ring.R * 2)
+          .fill(Color.Transparent)
+          .stroke(this.lineColor())
+          .strokeWidth(2.2)
+          .position({ x: ring.X - ring.R, y: ring.Y - ring.R })
+          .hitTestBehavior(HitTestMode.None)
+      }, (ring: ChemAromatic) => 'ar-' + ring.Id)
 
       ForEach(this.markIds(), (id: number) => {
         this.MarkView(id)
@@ -835,4 +908,5 @@ export struct ChemBoard {
 interface ChemHistory {
   a: ChemAtom[];
   b: ChemBond[];
+  r?: ChemAromatic[];
 }
